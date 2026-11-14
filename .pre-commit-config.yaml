@@ -1,0 +1,37 @@
+# .pre-commit-config.yaml
+repos:
+  # Repositorio oficial de Ruff para pre-commit
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Versión de Ruff a usar
+    rev: v0.4.4
+    hooks:
+      # Hook para el linter
+      - id: ruff
+        # Argumentos: --fix para corregir automáticamente, --exit-non-zero-on-fix para fallar si hubo cambios
+        args: [--fix, --exit-non-zero-on-fix]
+      # Hook para el formateador
+      - id: ruff-format
+
+  # Repositorio de mypy para pre-commit
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        # Argumentos extra para mypy
+        args: [--strict]
+        # Dependencias adicionales que mypy necesita para analizar
+        additional_dependencies: [types-requests]
+
+  # Hook para import-linter (se ejecuta como comando local)
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter
+        # El comando a ejecutar
+        entry: lint-imports
+        # Idioma (system = usar el comando instalado)
+        language: system
+        # Se ejecuta siempre, sin importar qué archivos cambien
+        always_run: true
+        # Pasa si no hay archivos que coincidan
+        pass_filenames: false

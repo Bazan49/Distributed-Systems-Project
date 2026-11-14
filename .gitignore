@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Import-linter
+.import_linter_cache/
+
+# Datos locales del proyecto (SQLite y pruebas)
+data/
+*.db
+*.sqlite
+*.sqlite3
