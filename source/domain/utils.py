@@ -3,9 +3,13 @@ import binascii
 import json
 from typing import Any
 
-from domain.envelope import EnvelopeError
+
+class EnvelopeError(ValueError):
+    """The envelope or its content does not conform to the format."""
+
 
 # Canonical serialization utilities
+
 
 def _canonical_json(obj: dict[str, Any]) -> bytes:
     """Deterministic JSON: sorted keys, no whitespace, pure ASCII.
@@ -79,9 +83,7 @@ def _parse_object(data: bytes, max_bytes: int) -> dict[str, Any]:
     if len(data) > max_bytes:
         raise EnvelopeError("data too large")
     try:
-        parsed = json.loads(
-            data.decode("utf-8"), object_pairs_hook=_no_duplicate_keys
-        )
+        parsed = json.loads(data.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EnvelopeError("not valid JSON") from exc
     if not isinstance(parsed, dict):
@@ -107,4 +109,4 @@ def _is_int(value: Any) -> bool:
     ``False == 0``. Without this check, ``{"seq": true}`` would silently
     parse as ``seq=1``, corrupting ordering logic.
     """
-    return type(value) is int  # excludes bool, which inherits from int
+    return type(value) is int  # noqa: E721  # must exclude bool, isinstance would include it

@@ -15,8 +15,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from domain.identifiers import ConversationId, MessageId, UserId
-from domain.utils import _b64d, _b64e, _canonical_json, _is_int, _parse_object, _require_keys
+from source.domain.identifiers import ConversationId, MessageId, UserId
+from source.domain.utils import (
+    EnvelopeError,
+    _b64d,
+    _b64e,
+    _canonical_json,
+    _is_int,
+    _parse_object,
+    _require_keys,
+)
 
 ENVELOPE_VERSION = 1
 
@@ -32,14 +40,12 @@ MAX_ENVELOPE_BYTES = 128 * 1024  # hard cap when reading bytes from the network
 _SIGNING_DOMAIN = b"messaging/envelope/v1\0"
 
 
-class EnvelopeError(ValueError):
-    """The envelope or its content does not conform to the format."""
-
 # Encrypted content
 class MessageKind(str, Enum):
     TEXT = "text"
     CONTACT_REQUEST = "contact_request"
     CONTACT_ACCEPT = "contact_accept"
+
 
 @dataclass(frozen=True)
 class MessageContent:
@@ -90,7 +96,7 @@ class MessageContent:
         )
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "MessageContent":
+    def from_bytes(cls, data: bytes) -> MessageContent:
         """Rebuild the content from already-decrypted bytes."""
         obj = _parse_object(data, MAX_CIPHERTEXT_BYTES)
         _require_keys(obj, {"v", "kind", "conv", "seq", "sent_at_ms", "body"})
@@ -108,6 +114,7 @@ class MessageContent:
             if isinstance(exc, EnvelopeError):
                 raise
             raise EnvelopeError(str(exc)) from exc
+
 
 # Envelope
 @dataclass(frozen=True)
@@ -131,24 +138,18 @@ class Envelope:
             raise EnvelopeError("unsupported envelope version")
         if not isinstance(self.message_id, MessageId):
             raise EnvelopeError("invalid message_id")
-        if not isinstance(self.sender, UserId) or not isinstance(
-            self.receiver, UserId
-        ):
+        if not isinstance(self.sender, UserId) or not isinstance(self.receiver, UserId):
             raise EnvelopeError("sender and receiver must be UserId")
         if self.sender == self.receiver:
             raise EnvelopeError("sender and receiver must differ")
         if not isinstance(self.ciphertext, bytes) or not (
             1 <= len(self.ciphertext) <= MAX_CIPHERTEXT_BYTES
         ):
-            raise EnvelopeError(
-                "ciphertext must be between 1 and 65536 bytes"
-            )
+            raise EnvelopeError("ciphertext must be between 1 and 65536 bytes")
         if not isinstance(self.signature, bytes) or not (
             1 <= len(self.signature) <= MAX_SIGNATURE_BYTES
         ):
-            raise EnvelopeError(
-                "signature must be between 1 and 128 bytes"
-            )
+            raise EnvelopeError("signature must be between 1 and 128 bytes")
 
     # -- signing -------------------------------------------------------------
 
@@ -178,7 +179,7 @@ class Envelope:
         receiver: UserId,
         ciphertext: bytes,
         sign: Callable[[bytes], bytes],
-    ) -> "Envelope":
+    ) -> Envelope:
         """Create a signed envelope.
 
         ``sign`` receives the bytes to sign and returns the signature.
@@ -204,9 +205,7 @@ class Envelope:
         to the conversation between the sender and receiver of this envelope.
         """
         if content.conversation_id != self.expected_conversation_id():
-            raise EnvelopeError(
-                "content does not match the envelope conversation"
-            )
+            raise EnvelopeError("content does not match the envelope conversation")
 
     # -- serialization -------------------------------------------------------
 
@@ -224,7 +223,7 @@ class Envelope:
         )
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "Envelope":
+    def from_bytes(cls, data: bytes) -> Envelope:
         """Read an envelope received from the network; reject anything inexact."""
         obj = _parse_object(data, MAX_ENVELOPE_BYTES)
         _require_keys(obj, {"v", "id", "from", "to", "ct", "sig"})

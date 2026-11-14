@@ -7,17 +7,19 @@ message is stored exactly once in its history.
 
     QUEUED ──► ACCEPTED ──► DELIVERED
        │           │
-       └───────────┴──────► EXPIRED ──► DELIVERED   
+       └───────────┴──────► EXPIRED ──► DELIVERED
 """
 
 from __future__ import annotations
+
 from enum import Enum
 
+
 class OutgoingStatus(str, Enum):
-    QUEUED = "queued"        # stored in local queue; no delivery guarantee yet
-    ACCEPTED = "accepted"    # durable: 2 of 3 mailboxes persisted it to disk
+    QUEUED = "queued"  # stored in local queue; no delivery guarantee yet
+    ACCEPTED = "accepted"  # durable: 2 of 3 mailboxes persisted it to disk
     DELIVERED = "delivered"  # receiver stored it in history and acknowledged
-    EXPIRED = "expired"      # stopped trying (deadline or retries exhausted)
+    EXPIRED = "expired"  # stopped trying (deadline or retries exhausted)
 
 
 _ALLOWED: dict[OutgoingStatus, frozenset[OutgoingStatus]] = {

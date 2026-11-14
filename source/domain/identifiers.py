@@ -27,12 +27,10 @@ class UserId:
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, str) or not _HEX_64.fullmatch(self.value):
-            raise ValueError(
-                "UserId must be 64 lowercase hexadecimal characters"
-            )
+            raise ValueError("UserId must be 64 lowercase hexadecimal characters")
 
     @classmethod
-    def from_public_key(cls, public_key: bytes) -> "UserId":
+    def from_public_key(cls, public_key: bytes) -> UserId:
         if not isinstance(public_key, bytes) or not public_key:
             raise ValueError("public key must be a non-empty bytes object")
         return cls(hashlib.sha256(public_key).hexdigest())
@@ -54,12 +52,10 @@ class MessageId:
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, str) or not _HEX_32.fullmatch(self.value):
-            raise ValueError(
-                "MessageId must be 32 lowercase hexadecimal characters"
-            )
+            raise ValueError("MessageId must be 32 lowercase hexadecimal characters")
 
     @classmethod
-    def new(cls) -> "MessageId":
+    def new(cls) -> MessageId:
         return cls(secrets.token_hex(16))
 
     def __str__(self) -> str:
@@ -83,13 +79,11 @@ class ConversationId:
             )
 
     @classmethod
-    def between(cls, a: UserId, b: UserId) -> "ConversationId":
+    def between(cls, a: UserId, b: UserId) -> ConversationId:
         if a == b:
             raise ValueError("a conversation requires two distinct users")
         first, second = sorted((a.value, b.value))
-        digest = hashlib.sha256(
-            f"conversation/v1\0{first}\0{second}".encode("ascii")
-        )
+        digest = hashlib.sha256(f"conversation/v1\0{first}\0{second}".encode("ascii"))
         return cls(digest.hexdigest())
 
     def __str__(self) -> str:
