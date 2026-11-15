@@ -109,4 +109,6 @@ def _is_int(value: Any) -> bool:
     ``False == 0``. Without this check, ``{"seq": true}`` would silently
     parse as ``seq=1``, corrupting ordering logic.
     """
-    return type(value) is int  # noqa: E721  # must exclude bool, isinstance would include it
+    return isinstance(value, int) and not isinstance(
+        value, bool
+    )  # must exclude bool, isinstance would include it
