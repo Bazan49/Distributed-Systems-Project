@@ -20,7 +20,7 @@ repos:
         # Argumentos extra para mypy
         args: [--strict]
         # Dependencias adicionales que mypy necesita para analizar
-        additional_dependencies: [types-requests]
+        additional_dependencies: [types-requests, pytest, hypothesis]
 
   # Hook para import-linter (se ejecuta como comando local)
   - repo: local
