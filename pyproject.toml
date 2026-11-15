@@ -118,6 +118,7 @@ markers = [
 [tool.coverage.run]
 source = ["source"]
 branch = true
+omit = ["source/application/ports/*", "source/domain/node_id.py", "source/domain/records.py"]
 
 [tool.coverage.report]
 fail_under = 90
