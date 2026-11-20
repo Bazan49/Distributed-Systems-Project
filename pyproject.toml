@@ -51,13 +51,12 @@ select = [
 # Reglas a ignorar globalmente
 ignore = [
     "E501",  # Línea demasiado larga (lo maneja el formateador)
-    "S101",  # Uso de `assert` (necesario en tests)
     "B008",  # Llamadas a funciones en argumentos por defecto
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # Ignorar reglas específicas en tests
-"tests/**/*.py" = ["S101", "S105", "S106"]
+"tests/**/*.py" = ["S101", "S105", "S106", "S311"]
 
 [tool.ruff.format]
 # Estilo de comillas (doble comilla, compatible con black)
