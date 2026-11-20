@@ -1,7 +1,7 @@
-"""Domain identifiers: UserId, MessageId, and ConversationId.
+"""Domain identifiers: UserId, MessageId, ConversationId and Alias.
 
-These are immutable value objects that validate their format on creation,
-so no other layer handles "arbitrary strings" as identifiers.
+Immutable value objects that validate their format on creation, so no other
+layer ever handles "any string" as an identifier. Standard library only.
 """
 
 from __future__ import annotations
@@ -14,13 +14,15 @@ from dataclasses import dataclass
 _HEX_64 = re.compile(r"[0-9a-f]{64}")
 _HEX_32 = re.compile(r"[0-9a-f]{32}")
 
+MAX_ALIAS_LENGTH = 64
+
 
 @dataclass(frozen=True, order=True)
 class UserId:
-    """A user's identity: SHA-256 of their public key (64 hex chars).
+    """A user identity: SHA-256 of the user's public key (64 hex characters).
 
-    There is no central account registry: anyone with the public key can
-    recompute the identifier and verify that it matches.
+    There is no central account registry: anyone holding the public key can
+    recompute the identifier and check that it matches.
     """
 
     value: str
@@ -32,7 +34,7 @@ class UserId:
     @classmethod
     def from_public_key(cls, public_key: bytes) -> UserId:
         if not isinstance(public_key, bytes) or not public_key:
-            raise ValueError("public key must be a non-empty bytes object")
+            raise ValueError("the public key must be non-empty bytes")
         return cls(hashlib.sha256(public_key).hexdigest())
 
     def __str__(self) -> str:
@@ -41,11 +43,11 @@ class UserId:
 
 @dataclass(frozen=True, order=True)
 class MessageId:
-    """Unique message identifier: 128 random bits (32 hex chars).
+    """Unique message identifier: 128 random bits (32 hex characters).
 
-    It is the key for duplicate suppression: the same message keeps the same
-    MessageId across all retries and over any delivery path. It is random on
-    purpose: it reveals no content, order, or sender.
+    It is the key of duplicate suppression: a message keeps the same MessageId
+    across every retry and over every delivery path. It is random on purpose so
+    it reveals nothing about content, order or sender.
     """
 
     value: str
@@ -64,10 +66,10 @@ class MessageId:
 
 @dataclass(frozen=True, order=True)
 class ConversationId:
-    """Identifier for the conversation between two users (64 hex chars).
+    """Identifier of the conversation between two users (64 hex characters).
 
-    It is derived from the two UserIds in canonical order, so A->B and B->A
-    yield the same value and no coordination is needed to compute it.
+    Derived from both UserIds in canonical order, so A->B and B->A produce the
+    same value and nobody needs to coordinate to obtain it.
     """
 
     value: str
@@ -81,10 +83,34 @@ class ConversationId:
     @classmethod
     def between(cls, a: UserId, b: UserId) -> ConversationId:
         if a == b:
-            raise ValueError("a conversation requires two distinct users")
+            raise ValueError("a conversation needs two distinct users")
         first, second = sorted((a.value, b.value))
         digest = hashlib.sha256(f"conversation/v1\0{first}\0{second}".encode("ascii"))
         return cls(digest.hexdigest())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class Alias:
+    """A user-chosen display name. It is NOT unique and NOT an identity.
+
+    1 to 64 printable characters, with no leading or trailing whitespace.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.value, str)
+            or not (1 <= len(self.value) <= MAX_ALIAS_LENGTH)
+            or self.value != self.value.strip()
+            or not self.value.isprintable()
+        ):
+            raise ValueError(
+                "Alias must be 1-64 printable characters without surrounding spaces"
+            )
 
     def __str__(self) -> str:
         return self.value
