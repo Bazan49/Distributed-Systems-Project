@@ -78,16 +78,28 @@ warn_redundant_casts = true
 show_error_codes = true
 # Muestra el contexto del error
 show_error_context = true
-exclude = ["venv/", "build/", "dist/"]
+exclude = [".venv/", "venv/", "build/", "dist/"]
 
 # Ejemplo: Ignorar la falta de stubs de tipos en librerías de terceros
 [[tool.mypy.overrides]]
 module = ["ray.*", "nacl.*"]
 ignore_missing_imports = true
 
+# Los tests usan pytest como dependencia de desarrollo opcional. Si no está
+# instalado en el entorno que ejecuta `mypy .`, sus decoradores no deben
+# producir errores de tipado secundarios.
+[[tool.mypy.overrides]]
+module = ["pytest", "pytest.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disable_error_code = ["misc"]
+
 [tool.importlinter]
 root_package = "source"
 include_external_packages = true
+ignore_missing_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Hexagonal architecture: layers"
