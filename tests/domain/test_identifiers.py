@@ -66,5 +66,5 @@ def test_conversation_id_requires_distinct_users() -> None:
 def test_identifiers_are_immutable_and_hashable() -> None:
     a = UserId.from_public_key(PK_A)
     with pytest.raises(AttributeError):
-        a.value = "x" * 64  
+        a.value = "x" * 64
     assert {a: 1}[UserId.from_public_key(PK_A)] == 1

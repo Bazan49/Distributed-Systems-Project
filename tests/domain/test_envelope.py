@@ -229,7 +229,7 @@ def test_from_bytes_rejects_oversized_input() -> None:
 
 def test_from_bytes_rejects_text_instead_of_bytes() -> None:
     with pytest.raises(FormatError):
-        Envelope.from_bytes("{}")  
+        Envelope.from_bytes("{}")
 
 
 @pytest.mark.parametrize("field", ["ct", "sig"])
