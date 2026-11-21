@@ -1,7 +1,7 @@
 import pytest
 
 from source.adapters.memory.peer_transport import InMemoryPeerNetwork
-from tests.contract.peer_transport_contract import (
+from tests.contracts.peer_transport_contract import (
     PeerTransportContract,
     TransportFactory,
 )

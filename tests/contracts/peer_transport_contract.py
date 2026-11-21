@@ -10,7 +10,7 @@ from source.application.ports import PeerTransportPort
 from source.domain.envelope import Envelope
 from source.domain.identifiers import UserId
 from source.domain.records import DirectSendResult
-from tests.contract.mailbox_store_contract import ALICE, BOB, CAROL, make_envelope
+from tests.contracts.mailbox_store_contract import ALICE, BOB, CAROL, make_envelope
 
 TIMEOUT = 1.0
 TransportFactory = Callable[[UserId], PeerTransportPort]

@@ -30,7 +30,7 @@ def test_a_valid_identity_is_created() -> None:
 
 def test_the_identity_is_immutable() -> None:
     with pytest.raises(dataclasses.FrozenInstanceError):
-        make_identity().created_at_ms = 5  # type: ignore[misc]
+        make_identity().created_at_ms = 5
 
 
 def test_the_protected_key_is_hidden_from_repr() -> None:

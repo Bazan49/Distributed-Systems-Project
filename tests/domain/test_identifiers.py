@@ -20,13 +20,13 @@ def test_user_id_is_deterministic_hash_of_public_key() -> None:
 )
 def test_user_id_rejects_invalid_formats(bad: object) -> None:
     with pytest.raises(ValueError):
-        UserId(bad)  # type: ignore[arg-type]
+        UserId(bad)
 
 
 @pytest.mark.parametrize("bad", [b"", "texto", None])
 def test_user_id_rejects_invalid_public_key(bad: object) -> None:
     with pytest.raises(ValueError):
-        UserId.from_public_key(bad)  # type: ignore[arg-type]
+        UserId.from_public_key(bad)
 
 
 def test_message_id_new_has_format_and_does_not_repeat() -> None:
@@ -41,7 +41,7 @@ def test_message_id_new_has_format_and_does_not_repeat() -> None:
 )
 def test_message_id_rejects_invalid_formats(bad: object) -> None:
     with pytest.raises(ValueError):
-        MessageId(bad)  # type: ignore[arg-type]
+        MessageId(bad)
 
 
 def test_conversation_id_is_symmetric() -> None:
@@ -66,5 +66,5 @@ def test_conversation_id_requires_distinct_users() -> None:
 def test_identifiers_are_immutable_and_hashable() -> None:
     a = UserId.from_public_key(PK_A)
     with pytest.raises(AttributeError):
-        a.value = "x" * 64  # type: ignore[misc]
+        a.value = "x" * 64
     assert {a: 1}[UserId.from_public_key(PK_A)] == 1

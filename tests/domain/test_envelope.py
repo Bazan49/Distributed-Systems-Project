@@ -100,7 +100,7 @@ def test_envelope_round_trip_with_random_data() -> None:
 def test_envelope_is_immutable() -> None:
     env = make_envelope()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        env.ciphertext = b"other"  # type: ignore[misc]
+        env.ciphertext = b"other"
 
 
 # ----------------------------- Envelope: signature --------------------------
@@ -229,7 +229,7 @@ def test_from_bytes_rejects_oversized_input() -> None:
 
 def test_from_bytes_rejects_text_instead_of_bytes() -> None:
     with pytest.raises(FormatError):
-        Envelope.from_bytes("{}")  # type: ignore[arg-type]
+        Envelope.from_bytes("{}")
 
 
 @pytest.mark.parametrize("field", ["ct", "sig"])
