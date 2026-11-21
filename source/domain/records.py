@@ -6,7 +6,7 @@ version comparison, status transitions) live in other domain modules.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Generic, TypeVar
 
@@ -20,10 +20,15 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class KeyPair:
-    """An identity key pair. Raw bytes; the format is an adapter detail."""
+    """An identity key pair. Raw bytes; the format is an adapter detail.
+
+    Only the crypto adapter knows what is inside each key (sizes, composition);
+    every other layer treats them as opaque. ``private_key`` is excluded from
+    ``repr`` so that logging, a traceback or a failed assertion never prints it.
+    """
 
     public_key: bytes
-    private_key: bytes
+    private_key: bytes = field(repr=False)
 
 
 @dataclass(frozen=True)
