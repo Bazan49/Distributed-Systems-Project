@@ -20,13 +20,13 @@ def test_user_id_is_deterministic_hash_of_public_key() -> None:
 )
 def test_user_id_rejects_invalid_formats(bad: object) -> None:
     with pytest.raises(ValueError):
-        UserId(bad)  
+        UserId(bad)
 
 
 @pytest.mark.parametrize("bad", [b"", "texto", None])
 def test_user_id_rejects_invalid_public_key(bad: object) -> None:
     with pytest.raises(ValueError):
-        UserId.from_public_key(bad)  
+        UserId.from_public_key(bad)
 
 
 def test_message_id_new_has_format_and_does_not_repeat() -> None:
@@ -41,7 +41,7 @@ def test_message_id_new_has_format_and_does_not_repeat() -> None:
 )
 def test_message_id_rejects_invalid_formats(bad: object) -> None:
     with pytest.raises(ValueError):
-        MessageId(bad)  
+        MessageId(bad)
 
 
 def test_conversation_id_is_symmetric() -> None:

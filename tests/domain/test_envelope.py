@@ -100,7 +100,7 @@ def test_envelope_round_trip_with_random_data() -> None:
 def test_envelope_is_immutable() -> None:
     env = make_envelope()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        env.ciphertext = b"other"  
+        env.ciphertext = b"other"
 
 
 # ----------------------------- Envelope: signature --------------------------
