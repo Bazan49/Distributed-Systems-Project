@@ -5,18 +5,7 @@ from source.domain.records import KeyPair
 
 @runtime_checkable
 class CryptoPort(Protocol):
-    """Every cryptographic operation the system needs.
-
-    Phase 1 adapter: PyNaCl (libsodium). The domain never imports ``nacl``.
-    Encryption is end to end WITHOUT forward secrecy: a leaked private key
-    decrypts old messages (documented scope limit of Phase 1).
-
-    How it plugs into the domain (see tests/integration):
-      * encrypt:  ``encrypt_for(receiver_pk, content.to_bytes())`` -> ciphertext
-      * sign:     ``Envelope.build(..., sign=lambda b: crypto.sign(sk, b))``
-      * verify:   ``verify(sender_pk, envelope.signing_bytes(), envelope.signature)``
-      * decrypt:  ``MessageContent.from_bytes(decrypt(sk, envelope.ciphertext))``
-    """
+    """Port for cryptographic operations."""
 
     def generate_key_pair(self) -> KeyPair:
         """Create a new identity key pair."""
