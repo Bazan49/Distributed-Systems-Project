@@ -26,8 +26,3 @@ class TestInMemoryNodeGateway(NodeGatewayContract):
     @pytest.fixture
     def harness(self) -> GatewayHarness:
         return InMemoryHarness()
-
-
-# Task 2.3 will add, with NO change to the contract:
-# class TestRayNodeGateway(NodeGatewayContract):
-#     harness = a fixture that starts 3 Ray node actors and kills one with ray.kill
