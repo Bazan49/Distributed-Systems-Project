@@ -20,6 +20,15 @@ class NotFoundError(StoreError):
     """The item to update does not exist."""
 
 
+class CorruptedStoreError(StoreError):
+    """Persisted data could not be read back as valid domain objects.
+
+    The file is damaged, was edited by hand or was written by incompatible
+    code. It is never papered over: the caller must not receive half-valid
+    data.
+    """
+
+
 # -- cryptography -------------------------------------------------------------
 
 
