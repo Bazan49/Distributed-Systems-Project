@@ -15,7 +15,7 @@ class MailboxStorePort(Protocol):
 
     Expiry is NODE-LOCAL metadata: the envelope carries no deadline (so the
     network cannot be told how long to keep it). The mailbox service computes
-    ``expires_at = clock.now() + TTL`` when it receives the envelope.
+    ``expires_at = clock.now_ms() + TTL`` when it receives the envelope.
     """
 
     def put(self, envelope: Envelope, expires_at: float) -> PutOutcome:
