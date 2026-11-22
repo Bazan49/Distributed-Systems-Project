@@ -96,6 +96,10 @@ ignore_missing_imports = true
 module = ["tests.*"]
 disable_error_code = ["misc", "arg-type"]
 
+[[tool.mypy.overrides]]
+module = ["hypothesis", "hypothesis.*"]
+ignore_missing_imports = true
+
 [tool.importlinter]
 root_package = "source"
 include_external_packages = true
