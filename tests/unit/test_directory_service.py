@@ -177,7 +177,7 @@ def test_a_captured_record_cannot_be_given_a_longer_presence(
 ) -> None:
     """The expiry is covered by the signature, so it cannot be stretched."""
     record = record_for(ALICE_KEYS, clock, lease_ms=MINUTE)
-    stretched = tweak(record, expires_at=record.expires_at + 5 * MINUTE)
+    stretched = tweak(record, expires_at_ms=record.expires_at_ms + 5 * MINUTE)
     assert service.publish(stretched) is PublishOutcome.REJECTED_INVALID_SIGNATURE
 
 

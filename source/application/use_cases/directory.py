@@ -125,9 +125,9 @@ class DirectoryService:
             return PublishOutcome.REJECTED_MALFORMED
 
         now = self._clock.now_ms()
-        if record.expires_at <= now:
+        if record.expires_at_ms <= now:
             return PublishOutcome.REJECTED_EXPIRED
-        if record.expires_at - now > self._policy.max_lease_ms:
+        if record.expires_at_ms - now > self._policy.max_lease_ms:
             return PublishOutcome.REJECTED_LEASE_TOO_LONG
 
         check = check_record_authenticity(record, self._crypto)
@@ -149,7 +149,7 @@ class DirectoryService:
         An expired record is never returned, even if it is still stored.
         """
         record = self._store.get(user_id)
-        if record is None or record.expires_at <= self._clock.now_ms():
+        if record is None or record.expires_at_ms <= self._clock.now_ms():
             return None
         return record
 

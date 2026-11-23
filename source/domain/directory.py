@@ -1,7 +1,7 @@
 """Directory records: a user's signed announcement.
 
 A record says: "I am ``user_id``, my public key is ``payload``, and I am present
-until ``expires_at``". Pure rules, standard library only.
+until ``expires_at_ms``". Pure rules, standard library only.
 
 Design:
 
@@ -12,7 +12,7 @@ Design:
 * The signature covers EVERY field (id, version, expiry and key), so a captured
   record cannot be altered, for example to make a presence last longer.
 * ``version`` only goes up: of two valid records, the higher version wins.
-* ``expires_at`` (in milliseconds) is the presence lease: if the user does not
+* ``expires_at_ms`` is the presence lease: if the user does not
   renew it, the user looks offline.
 * The signing context has its own prefix, so a directory signature can never be
   replayed as an envelope signature, or the other way round.
@@ -52,8 +52,10 @@ def validate_shape(record: DirectoryRecord) -> None:
         raise DirectoryRecordError("user_id must be a UserId")
     if not is_int(record.version) or record.version < 1:
         raise DirectoryRecordError("version must be an integer >= 1")
-    if not is_int(record.expires_at) or record.expires_at < 0:
-        raise DirectoryRecordError("expires_at must be an integer >= 0 (milliseconds)")
+    if not is_int(record.expires_at_ms) or record.expires_at_ms < 0:
+        raise DirectoryRecordError(
+            "expires_at_ms must be an integer >= 0 (milliseconds)"
+        )
     if (
         not isinstance(record.payload, bytes)
         or not 1 <= len(record.payload) <= MAX_PUBLIC_KEY_BYTES
@@ -85,7 +87,7 @@ def signing_bytes(record: DirectoryRecord) -> bytes:
         "v": DIRECTORY_FORMAT_VERSION,
         "user": record.user_id.value,
         "ver": record.version,
-        "exp": record.expires_at,
+        "exp": record.expires_at_ms,
         "pk": record.payload.hex(),
     }
     canonical = json.dumps(
@@ -111,7 +113,7 @@ def build_record(
         version=version,
         payload=public_key,
         signature=b"\x00",  # placeholder, replaced below
-        expires_at=expires_at_ms,
+        expires_at_ms=expires_at_ms,
     )
     signature = sign(signing_bytes(draft))
     return DirectoryRecord(
@@ -119,5 +121,5 @@ def build_record(
         version=version,
         payload=public_key,
         signature=signature,
-        expires_at=expires_at_ms,
+        expires_at_ms=expires_at_ms,
     )

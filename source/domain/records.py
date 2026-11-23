@@ -37,7 +37,7 @@ class DirectoryRecord:
     version: int  # the higher version wins
     payload: bytes
     signature: bytes
-    expires_at: float
+    expires_at_ms: int  # end of the presence lease (wall clock, ms)
 
 
 class PutOutcome(Enum):
