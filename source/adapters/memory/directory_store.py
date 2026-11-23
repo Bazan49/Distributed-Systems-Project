@@ -14,8 +14,10 @@ class InMemoryDirectoryStore:
     def put(self, record: DirectoryRecord) -> None:
         self._records[record.user_id] = record
 
-    def delete_expired(self, now: float) -> int:
-        expired = [uid for uid, rec in self._records.items() if rec.expires_at <= now]
+    def delete_expired(self, now_ms: int) -> int:
+        expired = [
+            uid for uid, rec in self._records.items() if rec.expires_at_ms <= now_ms
+        ]
         for uid in expired:
             del self._records[uid]
         return len(expired)

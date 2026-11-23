@@ -16,9 +16,9 @@ class PeerTransportPort(Protocol):
     """
 
     def send_direct(
-        self, receiver: UserId, envelope: Envelope, timeout: float
+        self, receiver: UserId, envelope: Envelope, timeout_ms: int
     ) -> DirectSendResult:
-        """Try to hand ``envelope`` straight to ``receiver``.
+        """Try to hand ``envelope`` straight to ``receiver`` within ``timeout_ms``.
 
         Returns ``DELIVERED`` only if the peer received it; any failure
         (offline, slow, transport error) is ``UNREACHABLE``. Never raises for those.
