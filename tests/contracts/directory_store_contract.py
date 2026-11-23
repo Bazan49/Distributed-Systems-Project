@@ -6,18 +6,18 @@ from source.domain.records import DirectoryRecord
 
 ALICE = UserId.from_public_key(b"alice")
 BOB = UserId.from_public_key(b"bob")
-NOW = 1_000.0
+NOW = 1_000
 
 
 def make_record(
-    user: UserId = ALICE, version: int = 1, expires_at: float = NOW + 100
+    user: UserId = ALICE, version: int = 1, expires_at_ms: int = NOW + 100
 ) -> DirectoryRecord:
     return DirectoryRecord(
         user_id=user,
         version=version,
         payload=b"presence",
         signature=b"sig",
-        expires_at=expires_at,
+        expires_at_ms=expires_at_ms,
     )
 
 
@@ -48,15 +48,15 @@ class DirectoryStoreContract:
         self, store: DirectoryStorePort
     ) -> None:
         # the store does NOT filter by time: expiry policy is domain logic
-        expired = make_record(expires_at=NOW - 1)
+        expired = make_record(expires_at_ms=NOW - 1)
         store.put(expired)
         assert store.get(ALICE) == expired
 
     def test_delete_expired_counts_and_removes_only_expired(
         self, store: DirectoryStorePort
     ) -> None:
-        store.put(make_record(user=ALICE, expires_at=NOW - 1))
-        store.put(make_record(user=BOB, expires_at=NOW + 100))
+        store.put(make_record(user=ALICE, expires_at_ms=NOW - 1))
+        store.put(make_record(user=BOB, expires_at_ms=NOW + 100))
         assert store.delete_expired(NOW) == 1
         assert store.get(ALICE) is None
         assert store.get(BOB) is not None
@@ -65,5 +65,5 @@ class DirectoryStoreContract:
     def test_a_record_expiring_exactly_now_is_expired(
         self, store: DirectoryStorePort
     ) -> None:
-        store.put(make_record(expires_at=NOW))
+        store.put(make_record(expires_at_ms=NOW))
         assert store.delete_expired(NOW) == 1

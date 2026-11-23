@@ -12,7 +12,7 @@ from source.domain.identifiers import UserId
 from source.domain.records import DirectSendResult
 from tests.contracts.mailbox_store_contract import ALICE, BOB, CAROL, make_envelope
 
-TIMEOUT = 1.0
+TIMEOUT_MS = 1_000
 TransportFactory = Callable[[UserId], PeerTransportPort]
 
 
@@ -25,7 +25,7 @@ class PeerTransportContract:
         received: list[Envelope] = []
         make_transport(BOB).start_listening(received.append)
         envelope = make_envelope(BOB)
-        result = make_transport(ALICE).send_direct(BOB, envelope, TIMEOUT)
+        result = make_transport(ALICE).send_direct(BOB, envelope, TIMEOUT_MS)
         assert result is DirectSendResult.DELIVERED
         assert received == [envelope]
 
@@ -34,13 +34,13 @@ class PeerTransportContract:
     ) -> None:
         received: list[Envelope] = []
         make_transport(BOB).start_listening(received.append)
-        make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT)
+        make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT_MS)
         assert len(received) == 1
 
     def test_unreachable_when_the_peer_never_listened(
         self, make_transport: TransportFactory
     ) -> None:
-        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT)
+        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT_MS)
         assert result is DirectSendResult.UNREACHABLE
 
     def test_unreachable_after_stop_listening(
@@ -50,7 +50,7 @@ class PeerTransportContract:
         bob = make_transport(BOB)
         bob.start_listening(received.append)
         bob.stop_listening()
-        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT)
+        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT_MS)
         assert result is DirectSendResult.UNREACHABLE
         assert received == []
 
@@ -62,7 +62,7 @@ class PeerTransportContract:
         bob.start_listening(received.append)
         bob.stop_listening()
         bob.start_listening(received.append)
-        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT)
+        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT_MS)
         assert result is DirectSendResult.DELIVERED
 
     def test_a_failing_receiver_means_unreachable_not_an_exception(
@@ -72,7 +72,7 @@ class PeerTransportContract:
             raise RuntimeError("receiver crashed")
 
         make_transport(BOB).start_listening(broken)
-        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT)
+        result = make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT_MS)
         assert result is DirectSendResult.UNREACHABLE
 
     def test_messages_go_only_to_their_receiver(
@@ -82,5 +82,5 @@ class PeerTransportContract:
         carol_got: list[Envelope] = []
         make_transport(BOB).start_listening(bob_got.append)
         make_transport(CAROL).start_listening(carol_got.append)
-        make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT)
+        make_transport(ALICE).send_direct(BOB, make_envelope(BOB), TIMEOUT_MS)
         assert len(bob_got) == 1 and carol_got == []
