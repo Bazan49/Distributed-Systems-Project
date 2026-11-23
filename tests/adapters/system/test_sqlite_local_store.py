@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from source.adapters.system.sqlite.schema import APPLICATION_ID, SCHEMA_VERSION
+from source.adapters.system.sqlite.schema import (
+    _MIGRATIONS,
+    APPLICATION_ID,
+    SCHEMA_VERSION,
+)
 from source.adapters.system.sqlite.sqlite_local_store import SqliteLocalStore
 from source.application.ports.errors import (
     AlreadyExistsError,
@@ -15,6 +19,8 @@ from source.application.ports.errors import (
     StoreError,
 )
 from source.application.ports.local_store import LocalStorePort
+from source.domain.messages import InboundState, ReceivedMessage
+from source.domain.ordering import Pending, StreamSnapshot
 from tests.contracts.local_store_contract import LocalStoreContract
 from tests.support.builders import (
     BOB,
@@ -236,3 +242,155 @@ def test_a_failure_between_the_two_writes_of_an_incoming_message_leaves_neither(
         assert store.has_received(message.message_id) is False
         assert store.list_received(message.conversation_id) == []
         assert store.save_incoming_message(message) is True
+
+
+def _inbound_state(
+    next_seq: int, pending: list[ReceivedMessage] | None = None
+) -> InboundState:
+    return StreamSnapshot(
+        next_seq,
+        tuple(Pending(m.seq, m.message_id, m) for m in pending or []),
+        frozenset(),
+    )
+
+
+@pytest.mark.parametrize("failing_table", ["received_messages", "inbound_streams"])
+def test_a_failure_inside_commit_inbound_leaves_nothing(
+    db_path: Path, failing_table: str
+) -> None:
+    """``commit_inbound`` writes the history first and the stream state last. A
+    failure at either end must roll back everything: no seen id, no history,
+    the previous state intact."""
+    buffered = make_received(sender=BOB, seq=2)
+    first = make_received(sender=BOB, seq=1)
+    conversation = first.conversation_id
+    before = _inbound_state(1, [buffered])
+    with SqliteLocalStore(db_path) as store, _raw(db_path) as raw:
+        store.commit_inbound(conversation, BOB.user_id, [], before)
+        raw.execute(
+            f"""
+            CREATE TRIGGER inject_failure BEFORE UPDATE ON {failing_table}
+            BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+            """
+        )
+        raw.execute(
+            f"""
+            CREATE TRIGGER inject_failure_insert BEFORE INSERT ON {failing_table}
+            BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+            """
+        )
+        with pytest.raises(StoreError):
+            store.commit_inbound(
+                conversation, BOB.user_id, [first, buffered], _inbound_state(3)
+            )
+        raw.execute("DROP TRIGGER inject_failure")
+        raw.execute("DROP TRIGGER inject_failure_insert")
+
+        assert store.has_received(first.message_id) is False
+        assert store.list_received(conversation) == []
+        assert store.load_inbound_stream(conversation, BOB.user_id) == before
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "UPDATE inbound_streams SET skipped = 'not json'",
+        "UPDATE inbound_streams SET skipped = '{\"a\": 1}'",
+        "UPDATE inbound_streams SET skipped = '[5]'",  # not behind next_seq
+        "UPDATE inbound_pending SET kind = 'not-a-kind'",
+    ],
+)
+def test_a_corrupted_inbound_state_is_reported(db_path: Path, corruption: str) -> None:
+    """A stored stream state that is not a valid snapshot raises
+    ``CorruptedStoreError``, on load and on the next commit."""
+    buffered = make_received(sender=BOB, seq=2)
+    conversation = buffered.conversation_id
+    with SqliteLocalStore(db_path) as store:
+        store.commit_inbound(
+            conversation, BOB.user_id, [], _inbound_state(1, [buffered])
+        )
+        with _raw(db_path) as raw:
+            raw.execute(corruption)
+        with pytest.raises(CorruptedStoreError):
+            store.load_inbound_stream(conversation, BOB.user_id)
+        if "inbound_pending" in corruption:
+            with pytest.raises(CorruptedStoreError):
+                store.commit_inbound(
+                    conversation, BOB.user_id, [], _inbound_state(1, [buffered])
+                )
+
+
+def test_deleting_a_stream_row_deletes_its_buffer(db_path: Path) -> None:
+    """The buffer cannot outlive its stream (foreign key with cascade)."""
+    buffered = make_received(sender=BOB, seq=2)
+    with SqliteLocalStore(db_path) as store:
+        store.commit_inbound(
+            buffered.conversation_id, BOB.user_id, [], _inbound_state(1, [buffered])
+        )
+    with _raw(db_path) as raw:
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute("DELETE FROM inbound_streams")
+        assert raw.execute("SELECT count(*) FROM inbound_pending").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------- migration
+
+
+def test_a_version_1_database_is_upgraded_in_place(db_path: Path) -> None:
+    """A store written by the previous version (no inbound tables) is upgraded
+    when opened: its data is kept and the new tables work."""
+    message = make_received()
+    with _raw(db_path) as raw:
+        for statement in _MIGRATIONS[0]:
+            raw.execute(statement)
+        raw.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        raw.execute("PRAGMA user_version = 1")
+        raw.execute(
+            "INSERT INTO seen_message_ids (message_id) VALUES (?)",
+            (message.message_id.value,),
+        )
+        raw.execute(
+            """
+            INSERT INTO received_messages
+                (message_id, conversation_id, sender, seq, kind, body,
+                 sent_at_ms, received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message.message_id.value,
+                message.conversation_id.value,
+                message.sender.value,
+                message.seq,
+                message.kind.value,
+                message.body,
+                message.sent_at_ms,
+                message.received_at_ms,
+            ),
+        )
+
+    with SqliteLocalStore(db_path) as store:
+        assert store.list_received(message.conversation_id) == [message]
+        assert store.load_inbound_stream(message.conversation_id, BOB.user_id) is None
+        store.commit_inbound(
+            message.conversation_id, BOB.user_id, [], _inbound_state(2)
+        )
+        assert store.load_inbound_stream(
+            message.conversation_id, BOB.user_id
+        ) == _inbound_state(2)
+
+    with _raw(db_path) as raw:
+        assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_a_database_error_while_loading_a_stream_is_a_store_error(
+    db_path: Path,
+) -> None:
+    """SQLite errors inside the read transaction surface as ``StoreError``."""
+    with SqliteLocalStore(db_path) as store:
+        store.commit_inbound(
+            make_received().conversation_id, BOB.user_id, [], _inbound_state(1)
+        )
+        with _raw(db_path) as raw:
+            raw.execute("DROP TABLE inbound_pending")
+        with pytest.raises(StoreError):
+            store.load_inbound_stream(make_received().conversation_id, BOB.user_id)
