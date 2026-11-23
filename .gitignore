@@ -229,3 +229,4 @@ data/
 *.sqlite3
 
 .hypothesis/
+docs/
