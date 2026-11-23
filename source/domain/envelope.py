@@ -15,7 +15,7 @@ does the rest.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
 
@@ -33,6 +33,7 @@ from source.domain.identifiers import ConversationId, MessageId, UserId
 ENVELOPE_VERSION = 1
 
 MAX_BODY_BYTES = 16 * 1024
+MAX_RECEIPT_IDS = 256  # message ids confirmed by one receipt
 MAX_CIPHERTEXT_BYTES = 64 * 1024
 MAX_SIGNATURE_BYTES = 128
 MAX_ENVELOPE_BYTES = (
@@ -47,6 +48,33 @@ class MessageKind(str, Enum):
     TEXT = "text"
     CONTACT_REQUEST = "contact_request"
     CONTACT_ACCEPT = "contact_accept"
+    # Delivery receipt: "I stored these messages". ``body`` holds the confirmed
+    # MessageIds (see ``receipt_body``). It is how a sender learns that a
+    # message deposited in a mailbox arrived (OutgoingStatus.DELIVERED). A
+    # receipt is never itself confirmed by another receipt.
+    RECEIPT = "receipt"
+
+
+_RECEIPT_SEPARATOR = ","
+
+
+def receipt_body(message_ids: Iterable[MessageId]) -> str:
+    """Body of a RECEIPT confirming ``message_ids`` (repeats collapsed, order kept)."""
+    return _RECEIPT_SEPARATOR.join(m.value for m in dict.fromkeys(message_ids))
+
+
+def _parse_receipt_body(body: str) -> tuple[MessageId, ...]:
+    if not body:
+        raise FormatError("a receipt must confirm at least one message")
+    try:
+        ids = tuple(MessageId(part) for part in body.split(_RECEIPT_SEPARATOR))
+    except ValueError as exc:
+        raise FormatError("a receipt body must be comma-separated message ids") from exc
+    if len(ids) > MAX_RECEIPT_IDS:
+        raise FormatError(f"a receipt confirms at most {MAX_RECEIPT_IDS} messages")
+    if len(set(ids)) != len(ids):
+        raise FormatError("a receipt repeats a message id")
+    return ids
 
 
 @dataclass(frozen=True)
@@ -54,8 +82,9 @@ class MessageContent:
     """What goes inside the encryption. Only the receiver sees it.
 
     ``seq`` is the per-sender, per-conversation counter (starts at 1) used to
-    order messages and detect gaps. It lives here and not in the envelope so
-    that mailboxes cannot observe the pace or order of a conversation.
+    order messages and detect gaps. Every kind, receipts included, uses it. It
+    lives here and not in the envelope so that mailboxes cannot observe the
+    pace or order of a conversation.
     """
 
     kind: MessageKind
@@ -83,6 +112,18 @@ class MessageContent:
             raise FormatError("body too large")
         if self.kind is MessageKind.TEXT and not self.body:
             raise FormatError("a text message cannot be empty")
+        if self.kind is MessageKind.RECEIPT:
+            _parse_receipt_body(self.body)
+
+    def receipt_ids(self) -> tuple[MessageId, ...]:
+        """The message ids confirmed by this RECEIPT.
+
+        Raises:
+            FormatError: this content is not a receipt.
+        """
+        if self.kind is not MessageKind.RECEIPT:
+            raise FormatError("not a receipt")
+        return _parse_receipt_body(self.body)
 
     def to_bytes(self) -> bytes:
         """Bytes handed to the crypto port to be encrypted."""

@@ -38,7 +38,7 @@ class InMemoryPeerTransport:
         self._user = user
 
     def send_direct(
-        self, receiver: UserId, envelope: Envelope, timeout: float
+        self, receiver: UserId, envelope: Envelope, timeout_ms: int
     ) -> DirectSendResult:
         handler = self._network._listener(receiver)
         if handler is None:

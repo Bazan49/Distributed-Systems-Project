@@ -12,9 +12,11 @@ from source.domain.envelope import (
     MAX_BODY_BYTES,
     MAX_CIPHERTEXT_BYTES,
     MAX_ENVELOPE_BYTES,
+    MAX_RECEIPT_IDS,
     Envelope,
     MessageContent,
     MessageKind,
+    receipt_body,
 )
 from source.domain.identifiers import ConversationId, MessageId, UserId
 
@@ -286,7 +288,7 @@ def test_content_is_deterministic_and_canonical() -> None:
 
 @pytest.mark.parametrize("kind", list(MessageKind))
 def test_content_accepts_every_kind(kind: MessageKind) -> None:
-    body = "hi" if kind is MessageKind.TEXT else ""
+    body = {MessageKind.TEXT: "hi", MessageKind.RECEIPT: "a" * 32}.get(kind, "")
     c = make_content(kind=kind, body=body)
     assert MessageContent.from_bytes(c.to_bytes()) == c
 
@@ -307,6 +309,33 @@ def test_content_rejects_empty_text_but_not_empty_contact_messages() -> None:
     with pytest.raises(FormatError):
         make_content(body="")
     make_content(kind=MessageKind.CONTACT_ACCEPT, body="")
+
+
+# ---------------- receipts ----------------
+def test_receipt_round_trip_keeps_the_confirmed_ids_in_order() -> None:
+    ids = [MessageId.new() for _ in range(3)]
+    c = make_content(kind=MessageKind.RECEIPT, body=receipt_body(ids + ids[:1]))
+    assert MessageContent.from_bytes(c.to_bytes()).receipt_ids() == tuple(ids)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "not-an-id",
+        "a" * 32 + ",",
+        "a" * 32 + "," + "a" * 32,  # repeated id
+        ",".join(MessageId.new().value for _ in range(MAX_RECEIPT_IDS + 1)),
+    ],
+)
+def test_invalid_receipt_bodies_are_rejected(body: str) -> None:
+    with pytest.raises(FormatError):
+        make_content(kind=MessageKind.RECEIPT, body=body)
+
+
+def test_receipt_ids_of_a_text_message_is_an_error() -> None:
+    with pytest.raises(FormatError, match="not a receipt"):
+        make_content().receipt_ids()
 
 
 def test_content_limits_size_in_bytes_not_characters() -> None:

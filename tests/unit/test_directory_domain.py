@@ -59,7 +59,7 @@ def test_signing_bytes_are_deterministic() -> None:
     "field,value",
     [
         ("version", 6),
-        ("expires_at", NOW + 120_000),
+        ("expires_at_ms", NOW + 120_000),
         ("payload", b"another-key"),
         ("user_id", UserId.from_public_key(b"someone else")),
     ],
@@ -105,9 +105,9 @@ def test_a_good_record_is_well_formed() -> None:
         {"version": -1},
         {"version": True},  # bool is not a real integer here
         {"version": 1.5},
-        {"expires_at": -1},
-        {"expires_at": 1.5},
-        {"expires_at": True},
+        {"expires_at_ms": -1},
+        {"expires_at_ms": 1.5},
+        {"expires_at_ms": True},
         {"payload": b""},
         {"payload": b"k" * (MAX_PUBLIC_KEY_BYTES + 1)},
         {"payload": "not bytes"},

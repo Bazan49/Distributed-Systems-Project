@@ -20,6 +20,6 @@ class DirectoryStorePort(Protocol):
         """Insert or overwrite the record of ``record.user_id``."""
         ...
 
-    def delete_expired(self, now: float) -> int:
-        """Delete records expired at ``now`` and return how many."""
+    def delete_expired(self, now_ms: int) -> int:
+        """Delete records with ``expires_at_ms <= now_ms`` and return how many."""
         ...

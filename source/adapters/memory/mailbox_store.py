@@ -7,18 +7,18 @@ class InMemoryMailboxStore:
     """Dict-based MailboxStorePort for tests. Keeps insertion order (oldest first)."""
 
     def __init__(self) -> None:
-        self._queues: dict[UserId, dict[MessageId, tuple[Envelope, float]]] = {}
+        self._queues: dict[UserId, dict[MessageId, tuple[Envelope, int]]] = {}
 
-    def put(self, envelope: Envelope, expires_at: float) -> PutOutcome:
+    def put(self, envelope: Envelope, expires_at_ms: int) -> PutOutcome:
         queue = self._queues.setdefault(envelope.receiver, {})
         if envelope.message_id in queue:
             return PutOutcome.ALREADY_PRESENT
-        queue[envelope.message_id] = (envelope, expires_at)
+        queue[envelope.message_id] = (envelope, expires_at_ms)
         return PutOutcome.STORED
 
-    def fetch(self, receiver: UserId, limit: int, now: float) -> list[Envelope]:
+    def fetch(self, receiver: UserId, limit: int, now_ms: int) -> list[Envelope]:
         queue = self._queues.get(receiver, {})
-        alive = [env for env, expires_at in queue.values() if expires_at > now]
+        alive = [env for env, expires_at_ms in queue.values() if expires_at_ms > now_ms]
         return alive[:limit]
 
     def delete(self, receiver: UserId, message_ids: list[MessageId]) -> int:
@@ -29,10 +29,10 @@ class InMemoryMailboxStore:
                 removed += 1
         return removed
 
-    def purge_expired(self, now: float) -> int:
+    def purge_expired(self, now_ms: int) -> int:
         removed = 0
         for queue in self._queues.values():
-            for message_id in [m for m, (_, exp) in queue.items() if exp <= now]:
+            for message_id in [m for m, (_, exp) in queue.items() if exp <= now_ms]:
                 del queue[message_id]
                 removed += 1
         return removed
