@@ -30,7 +30,8 @@ from source.application.ports.local_store import LocalStorePort
 from source.domain.contacts import ContactState
 from source.domain.envelope import MessageKind
 from source.domain.identifiers import MessageId
-from source.domain.messages import OutgoingMessage
+from source.domain.messages import InboundState, OutgoingMessage, ReceivedMessage
+from source.domain.ordering import Arrival, InboundStream, Pending, StreamSnapshot
 from source.domain.outgoing_status import OutgoingStatus
 from tests.support.builders import (
     ALICE,
@@ -602,6 +603,201 @@ class LocalStoreContract:
         store.save_incoming_message(make_received(sender=BOB, seq=9))
         assert store.last_outgoing_seq(WITH_BOB) == 0
 
+    # -------------------------------------------- incoming ordering state
+
+    def test_an_unknown_stream_has_no_state(self, store: LocalStorePort) -> None:
+        """A stream that was never committed loads as ``None``."""
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) is None
+
+    def test_a_committed_buffer_is_loaded_back_and_not_yet_history(
+        self, store: LocalStorePort
+    ) -> None:
+        """Buffering only changes the stream state: the message is not in the
+        history and its id is not seen until it is released."""
+        ahead = make_received(sender=BOB, seq=3)
+        state = _state(1, [ahead])
+
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], state)
+
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == state
+        assert store.list_received(FROM_BOB) == []
+        assert store.has_received(ahead.message_id) is False
+
+    def test_released_messages_join_the_history_in_the_given_order(
+        self, store: LocalStorePort
+    ) -> None:
+        """Released messages are appended in order and marked as seen, and the
+        state is replaced, in the same call."""
+        released = [make_received(sender=BOB, seq=seq) for seq in (1, 2)]
+        state = _state(3)
+
+        store.commit_inbound(FROM_BOB, BOB.user_id, released, state)
+
+        assert store.list_received(FROM_BOB) == released
+        assert all(store.has_received(m.message_id) for m in released)
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == state
+
+    def test_releasing_a_buffered_message_moves_it_from_buffer_to_history(
+        self, store: LocalStorePort
+    ) -> None:
+        """A message buffered in one commit and released in the next ends up in
+        the history and no longer in the buffer."""
+        first, second = (make_received(sender=BOB, seq=seq) for seq in (1, 2))
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], _state(1, [second]))
+
+        store.commit_inbound(FROM_BOB, BOB.user_id, [first, second], _state(3))
+
+        assert store.list_received(FROM_BOB) == [first, second]
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == _state(3)
+
+    def test_the_buffer_keeps_what_is_still_waiting(
+        self, store: LocalStorePort
+    ) -> None:
+        """Only the released part leaves the buffer; the rest stays as it was."""
+        first, third, fifth = (make_received(sender=BOB, seq=s) for s in (1, 3, 5))
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], _state(1, [third, fifth]))
+
+        store.commit_inbound(FROM_BOB, BOB.user_id, [first], _state(2, [third, fifth]))
+
+        loaded = store.load_inbound_stream(FROM_BOB, BOB.user_id)
+        assert loaded == _state(2, [third, fifth])
+
+    def test_a_skipped_gap_and_a_late_arrival_are_recorded(
+        self, store: LocalStorePort
+    ) -> None:
+        """Skipped seqs are stored; a late release keeps next_seq and forgets the skip."""
+        second, first = (make_received(sender=BOB, seq=seq) for seq in (2, 1))
+        store.commit_inbound(FROM_BOB, BOB.user_id, [second], _state(3, skipped={1}))
+
+        store.commit_inbound(FROM_BOB, BOB.user_id, [first], _state(3))
+
+        assert store.list_received(FROM_BOB) == [second, first]  # storage order
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == _state(3)
+
+    def test_committing_the_same_state_again_is_allowed(
+        self, store: LocalStorePort
+    ) -> None:
+        """next_seq may stay the same: only going back is refused."""
+        state = _state(1, [make_received(sender=BOB, seq=2)])
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], state)
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], state)
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == state
+
+    def test_streams_are_kept_apart_by_conversation_and_sender(
+        self, store: LocalStorePort
+    ) -> None:
+        """Each (conversation, sender) has its own state."""
+        from_carla = conversation_of(CARLA, ALICE)
+        bob_state = _state(1, [make_received(sender=BOB, seq=2)])
+        carla_state = _state(5)
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], bob_state)
+        store.commit_inbound(from_carla, CARLA.user_id, [], carla_state)
+
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == bob_state
+        assert store.load_inbound_stream(from_carla, CARLA.user_id) == carla_state
+
+    def test_a_released_message_already_seen_rejects_the_whole_commit(
+        self, store: LocalStorePort
+    ) -> None:
+        """If ANY released id was seen, nothing is written: not the other
+        messages, not the new state."""
+        seen = make_received(sender=BOB, seq=2)
+        store.save_incoming_message(seen)
+        before = _state(1, [make_received(sender=BOB, seq=3)])
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], before)
+        fresh = make_received(sender=BOB, seq=1)
+
+        with pytest.raises(AlreadyExistsError):
+            store.commit_inbound(FROM_BOB, BOB.user_id, [fresh, seen], _state(4))
+
+        assert store.has_received(fresh.message_id) is False
+        assert store.list_received(FROM_BOB) == [seen]
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == before
+
+    def test_next_seq_never_goes_back(self, store: LocalStorePort) -> None:
+        """An old snapshot cannot overwrite a newer one."""
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], _state(5))
+        with pytest.raises(ValueError):
+            store.commit_inbound(FROM_BOB, BOB.user_id, [], _state(4))
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == _state(5)
+
+    def test_a_buffered_seq_cannot_change_its_message(
+        self, store: LocalStorePort
+    ) -> None:
+        """Buffered messages are immutable: the same seq must stay the same message."""
+        original = _state(1, [make_received(sender=BOB, seq=2, body="one")])
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], original)
+        replaced = _state(1, [make_received(sender=BOB, seq=2, body="two")])
+
+        with pytest.raises(ValueError):
+            store.commit_inbound(FROM_BOB, BOB.user_id, [], replaced)
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == original
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "released_from_another_sender",
+            "released_not_behind_next_seq",
+            "released_twice",
+            "buffered_from_another_sender",
+            "buffered_entry_mismatch",
+            "released_and_buffered",
+        ],
+    )
+    def test_an_inconsistent_commit_is_refused_and_writes_nothing(
+        self, store: LocalStorePort, case: str
+    ) -> None:
+        """Arguments that do not describe one step of one stream are a ValueError."""
+        one = make_received(sender=BOB, seq=1)
+        two = make_received(sender=BOB, seq=2)
+        released: list[ReceivedMessage] = []
+        state = _state(3)
+        if case == "released_from_another_sender":
+            released = [make_received(sender=CARLA, seq=1)]
+        elif case == "released_not_behind_next_seq":
+            released, state = [two], _state(2)
+        elif case == "released_twice":
+            released = [one, one]
+        elif case == "buffered_from_another_sender":
+            state = _state(1, [make_received(sender=CARLA, seq=2)])
+        elif case == "buffered_entry_mismatch":
+            state = StreamSnapshot(1, (Pending(3, two.message_id, two),), frozenset())
+        else:  # released_and_buffered: the same id released AND still waiting
+            released = [one]
+            state = _state(2, [dataclasses.replace(one, seq=3)])
+
+        with pytest.raises(ValueError):
+            store.commit_inbound(FROM_BOB, BOB.user_id, released, state)
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) is None
+        assert store.list_received(FROM_BOB) == []
+
+    def test_an_inbound_stream_driven_through_the_store_gives_the_full_history(
+        self, store: LocalStorePort
+    ) -> None:
+        """The way 1A.7 will use it: offer each arrival, commit every step that
+        changed the stream, and rebuild the stream from the store before each
+        arrival (as if the client restarted every time)."""
+        messages = {seq: make_received(sender=BOB, seq=seq) for seq in range(1, 7)}
+        for seq in (4, 2, 2, 6, 1, 5, 3, 1):
+            saved = store.load_inbound_stream(FROM_BOB, BOB.user_id)
+            stream: InboundStream[ReceivedMessage] = (
+                InboundStream()
+                if saved is None
+                else InboundStream.restore(saved, now_ms=0)
+            )
+            message = messages[seq]
+            result = stream.offer(seq, message.message_id, message, now_ms=0)
+            if result.arrival in _CHANGES_STATE:
+                store.commit_inbound(
+                    FROM_BOB,
+                    BOB.user_id,
+                    [d.item for d in result.released],
+                    stream.snapshot(),
+                )
+
+        assert store.list_received(FROM_BOB) == [messages[s] for s in range(1, 7)]
+        assert store.load_inbound_stream(FROM_BOB, BOB.user_id) == _state(7)
+
     # -------------------------------------------------- durability (restart)
 
     def test_the_identity_survives_a_restart(self, store: LocalStorePort) -> None:
@@ -689,3 +885,42 @@ class LocalStoreContract:
         with pytest.raises(AlreadyExistsError):
             store.enqueue_outgoing(make_outgoing(seq=1, body="clash"))
         assert self.reopen(store).list_outgoing() == [first]
+
+    def test_the_inbound_state_survives_a_restart(self, store: LocalStorePort) -> None:
+        """next_seq, skipped seqs and buffered messages come back identical."""
+        released = make_received(sender=BOB, seq=2)
+        state = _state(3, [make_received(sender=BOB, seq=5)], skipped={1})
+        store.commit_inbound(FROM_BOB, BOB.user_id, [released], state)
+
+        reopened = self.reopen(store)
+
+        assert reopened.load_inbound_stream(FROM_BOB, BOB.user_id) == state
+        assert reopened.list_received(FROM_BOB) == [released]
+        assert reopened.has_received(released.message_id) is True
+
+    def test_next_seq_still_never_goes_back_after_a_restart(
+        self, store: LocalStorePort
+    ) -> None:
+        """The "never go back" rule uses the durable state, not memory."""
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], _state(5))
+        with pytest.raises(ValueError):
+            self.reopen(store).commit_inbound(FROM_BOB, BOB.user_id, [], _state(4))
+
+
+_CHANGES_STATE = {Arrival.DELIVERED, Arrival.BUFFERED, Arrival.LATE}
+
+
+def _state(
+    next_seq: int,
+    pending: list[ReceivedMessage] | None = None,
+    skipped: set[int] | None = None,
+) -> InboundState:
+    """A stream state whose buffer holds exactly ``pending`` (sorted by seq)."""
+    return StreamSnapshot(
+        next_seq=next_seq,
+        pending=tuple(
+            Pending(m.seq, m.message_id, m)
+            for m in sorted(pending or [], key=lambda m: m.seq)
+        ),
+        skipped=frozenset(skipped or set()),
+    )

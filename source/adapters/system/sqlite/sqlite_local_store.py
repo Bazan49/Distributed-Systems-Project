@@ -11,7 +11,7 @@ import contextlib
 import json
 import os
 import sqlite3
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -29,7 +29,13 @@ from source.domain.contacts import Contact, ContactState
 from source.domain.envelope import Envelope, MessageKind
 from source.domain.identifiers import Alias, ConversationId, MessageId, UserId
 from source.domain.identity import LocalIdentity
-from source.domain.messages import OutgoingMessage, ReceivedMessage
+from source.domain.messages import (
+    InboundState,
+    OutgoingMessage,
+    ReceivedMessage,
+    check_inbound_commit,
+)
+from source.domain.ordering import Pending, StreamSnapshot
 from source.domain.outgoing_status import OutgoingStatus
 
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
@@ -140,6 +146,58 @@ def _outgoing_from_row(row: sqlite3.Row) -> OutgoingMessage:
     )
 
 
+def _inbound_from_rows(stream: sqlite3.Row, pending: list[sqlite3.Row]) -> InboundState:
+    skipped = json.loads(stream["skipped"])
+    if not isinstance(skipped, list):
+        raise ValueError("skipped must be a JSON array")
+    return StreamSnapshot(
+        next_seq=stream["next_seq"],
+        pending=tuple(
+            Pending(row["seq"], MessageId(row["message_id"]), _received_from_row(row))
+            for row in pending
+        ),
+        skipped=frozenset(skipped),
+    )
+
+
+# row writers (run inside a write transaction)
+
+_RECEIVED_COLUMNS = (
+    "message_id, conversation_id, sender, seq, kind, body, sent_at_ms, received_at_ms"
+)
+
+
+def _received_values(message: ReceivedMessage) -> tuple[Any, ...]:
+    return (
+        message.message_id.value,
+        message.conversation_id.value,
+        message.sender.value,
+        message.seq,
+        message.kind.value,
+        message.body,
+        message.sent_at_ms,
+        message.received_at_ms,
+    )
+
+
+def _insert_received(conn: sqlite3.Connection, message: ReceivedMessage) -> bool:
+    """Mark the id as seen and append the message to the history.
+
+    Returns False, writing nothing, if the id was already seen.
+    """
+    seen = conn.execute(
+        "INSERT INTO seen_message_ids (message_id) VALUES (?) ON CONFLICT DO NOTHING",
+        (message.message_id.value,),
+    )
+    if seen.rowcount == 0:
+        return False
+    conn.execute(
+        f"INSERT INTO received_messages ({_RECEIVED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant column list
+        _received_values(message),
+    )
+    return True
+
+
 def _decode(build: Callable[[sqlite3.Row], T], row: sqlite3.Row, what: str) -> T:
     """Rebuild a domain object, turning any invariant violation into corruption."""
     try:
@@ -240,6 +298,26 @@ class SqliteLocalStore(LocalStorePort):
                     with contextlib.suppress(sqlite3.Error):
                         conn.execute("ROLLBACK")
                 raise
+        except sqlite3.Error as exc:
+            raise StoreError(f"database error: {exc}") from exc
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """One read transaction: every query in the block sees the same snapshot.
+
+        Needed when one answer is built from several queries, so that a
+        concurrent writer cannot be observed halfway through. In WAL mode it
+        never blocks writers.
+        """
+        conn = self._connection()
+        try:
+            conn.execute("BEGIN")
+            try:
+                yield conn
+            finally:
+                if conn.in_transaction:
+                    with contextlib.suppress(sqlite3.Error):
+                        conn.execute("COMMIT")
         except sqlite3.Error as exc:
             raise StoreError(f"database error: {exc}") from exc
 
@@ -345,31 +423,7 @@ class SqliteLocalStore(LocalStorePort):
             True if stored; False if the id was already seen (nothing written).
         """
         with self._write() as conn:
-            seen = conn.execute(
-                "INSERT INTO seen_message_ids (message_id) VALUES (?) ON CONFLICT DO NOTHING",
-                (message.message_id.value,),
-            )
-            if seen.rowcount == 0:
-                return False
-            conn.execute(
-                """
-                INSERT INTO received_messages
-                    (message_id, conversation_id, sender, seq, kind, body,
-                     sent_at_ms, received_at_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    message.message_id.value,
-                    message.conversation_id.value,
-                    message.sender.value,
-                    message.seq,
-                    message.kind.value,
-                    message.body,
-                    message.sent_at_ms,
-                    message.received_at_ms,
-                ),
-            )
-            return True
+            return _insert_received(conn, message)
 
     def has_received(self, message_id: MessageId) -> bool:
         """True if this message id was already accepted (duplicate check)."""
@@ -406,6 +460,127 @@ class SqliteLocalStore(LocalStorePort):
             (conversation_id.value, limit),
         )
         return [_decode(_received_from_row, row, "received message") for row in rows]
+
+    # incoming ordering state
+
+    def load_inbound_stream(
+        self, conversation_id: ConversationId, sender: UserId
+    ) -> InboundState | None:
+        """Return the last committed ordering state of the stream, or None.
+
+        Raises:
+            CorruptedStoreError: the stored state is not a valid snapshot.
+        """
+        key = (conversation_id.value, sender.value)
+        with self._read() as conn:
+            stream = conn.execute(
+                """
+                SELECT next_seq, skipped FROM inbound_streams
+                WHERE conversation_id = ? AND sender = ?
+                """,
+                key,
+            ).fetchone()
+            if stream is None:
+                return None
+            pending = conn.execute(
+                f"""
+                SELECT {_RECEIVED_COLUMNS} FROM inbound_pending
+                WHERE conversation_id = ? AND sender = ?
+                ORDER BY seq
+                """,  # noqa: S608 - constant column list
+                key,
+            ).fetchall()
+        return _decode(
+            lambda row: _inbound_from_rows(row, pending), stream, "inbound stream"
+        )
+
+    def commit_inbound(
+        self,
+        conversation_id: ConversationId,
+        sender: UserId,
+        released: Sequence[ReceivedMessage],
+        state: InboundState,
+    ) -> None:
+        """Append ``released`` to the history and replace the stream state, atomically.
+
+        Only the buffered rows that changed are written: a step usually adds
+        or removes a handful of messages, and the buffer may hold hundreds.
+
+        Raises:
+            ValueError: inconsistent arguments, ``next_seq`` going back, or a
+                buffered seq changing its message.
+            AlreadyExistsError: a released message id was already seen.
+            CorruptedStoreError: the stored buffer is not valid.
+        """
+        released = tuple(released)
+        check_inbound_commit(conversation_id, sender, released, state)
+        key = (conversation_id.value, sender.value)
+        with self._write() as conn:
+            # 1. Rules that need the stored state. Raising here rolls back.
+            current = conn.execute(
+                "SELECT next_seq FROM inbound_streams WHERE conversation_id = ? AND sender = ?",
+                key,
+            ).fetchone()
+            if current is not None and state.next_seq < current["next_seq"]:
+                raise ValueError("next_seq cannot go back")
+            rows = conn.execute(
+                f"SELECT {_RECEIVED_COLUMNS} FROM inbound_pending "  # noqa: S608 - constant column list
+                "WHERE conversation_id = ? AND sender = ?",
+                key,
+            ).fetchall()
+            stored = {
+                pending.seq: pending
+                for pending in (
+                    _decode(
+                        lambda r: Pending(
+                            r["seq"], MessageId(r["message_id"]), _received_from_row(r)
+                        ),
+                        row,
+                        "buffered message",
+                    )
+                    for row in rows
+                )
+            }
+            for pending in state.pending:
+                if stored.get(pending.seq, pending) != pending:
+                    raise ValueError(f"buffered seq {pending.seq} changed its message")
+
+            # 2. The released messages join the history, in order.
+            for message in released:
+                if not _insert_received(conn, message):
+                    raise AlreadyExistsError(
+                        f"message {message.message_id} already seen"
+                    )
+
+            # 3. The stream state replaces the previous one.
+            conn.execute(
+                """
+                INSERT INTO inbound_streams (conversation_id, sender, next_seq, skipped)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (conversation_id, sender) DO UPDATE SET
+                    next_seq = excluded.next_seq,
+                    skipped  = excluded.skipped
+                """,
+                (*key, state.next_seq, json.dumps(sorted(state.skipped))),
+            )
+            kept = {pending.seq for pending in state.pending}
+            gone = [seq for seq in stored if seq not in kept]
+            conn.execute(
+                """
+                DELETE FROM inbound_pending
+                WHERE conversation_id = ? AND sender = ?
+                  AND seq IN (SELECT value FROM json_each(?))
+                """,
+                (*key, json.dumps(gone)),
+            )
+            conn.executemany(
+                f"INSERT INTO inbound_pending ({_RECEIVED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant column list
+                [
+                    _received_values(pending.item)
+                    for pending in state.pending
+                    if pending.seq not in stored
+                ],
+            )
 
     # outbox
 

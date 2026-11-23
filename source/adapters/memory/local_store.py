@@ -8,13 +8,18 @@ against the SQLite adapter instead. Standard library only.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 from source.application.ports.errors import AlreadyExistsError, NotFoundError
 from source.domain.contacts import Contact, ContactState
 from source.domain.identifiers import ConversationId, MessageId, UserId
 from source.domain.identity import LocalIdentity
-from source.domain.messages import OutgoingMessage, ReceivedMessage
+from source.domain.messages import (
+    InboundState,
+    OutgoingMessage,
+    ReceivedMessage,
+    check_inbound_commit,
+)
 from source.domain.outgoing_status import OutgoingStatus
 
 
@@ -37,6 +42,7 @@ class MemoryLocalStore:
         self._contacts: dict[UserId, Contact] = {}
         self._received: dict[MessageId, ReceivedMessage] = {}
         self._outgoing: dict[MessageId, OutgoingMessage] = {}
+        self._streams: dict[tuple[ConversationId, UserId], InboundState] = {}
 
     # identity
 
@@ -87,6 +93,49 @@ class MemoryLocalStore:
             return False
         self._received[message.message_id] = message
         return True
+
+    # incoming ordering state
+
+    def load_inbound_stream(
+        self, conversation_id: ConversationId, sender: UserId
+    ) -> InboundState | None:
+        """Return the last committed ordering state of the stream, or None."""
+        return self._streams.get((conversation_id, sender))
+
+    def commit_inbound(
+        self,
+        conversation_id: ConversationId,
+        sender: UserId,
+        released: Sequence[ReceivedMessage],
+        state: InboundState,
+    ) -> None:
+        """Append ``released`` to the history and replace the stream state, atomically.
+
+        Every check runs BEFORE anything is modified, which is what makes the
+        operation all-or-nothing in memory.
+
+        Raises:
+            ValueError: inconsistent arguments, ``next_seq`` going back, or a
+                buffered seq changing its message.
+            AlreadyExistsError: a released message id was already seen.
+        """
+        released = tuple(released)
+        check_inbound_commit(conversation_id, sender, released, state)
+        current = self._streams.get((conversation_id, sender))
+        if current is not None:
+            if state.next_seq < current.next_seq:
+                raise ValueError("next_seq cannot go back")
+            before = {p.seq: p for p in current.pending}
+            for pending in state.pending:
+                if before.get(pending.seq, pending) != pending:
+                    raise ValueError(f"buffered seq {pending.seq} changed its message")
+        for message in released:
+            if message.message_id in self._received:
+                raise AlreadyExistsError(f"message {message.message_id} already seen")
+
+        for message in released:
+            self._received[message.message_id] = message
+        self._streams[(conversation_id, sender)] = state
 
     def has_received(self, message_id: MessageId) -> bool:
         """True if this message id was already stored (duplicate check)."""
