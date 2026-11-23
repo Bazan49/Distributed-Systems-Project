@@ -4,11 +4,14 @@ from source.application.ports import MailboxStorePort
 from source.domain.envelope import Envelope
 from source.domain.identifiers import MessageId, UserId
 from source.domain.records import PutOutcome
+from tests.support import builders
 
-ALICE = UserId.from_public_key(b"alice")
-BOB = UserId.from_public_key(b"bob")
-CAROL = UserId.from_public_key(b"carol")
-NOW = 1_000.0
+# Ids of users with real (fake-crypto) key pairs, so the same envelopes also
+# work in tests that need signed mailbox requests.
+ALICE = builders.ALICE.user_id
+BOB = builders.BOB.user_id
+CAROL = builders.CARLA.user_id
+NOW = 1_000
 
 
 def make_envelope(receiver: UserId = BOB) -> Envelope:
@@ -41,6 +44,14 @@ class MailboxStoreContract:
         for env in envs:
             store.put(env, NOW + 100)
         assert store.fetch(BOB, 10, NOW) == envs
+
+    def test_oldest_first_means_arrival_not_expiry(
+        self, store: MailboxStorePort
+    ) -> None:
+        first, second = make_envelope(), make_envelope()
+        store.put(first, NOW + 500)
+        store.put(second, NOW + 100)  # expires sooner, but arrived later
+        assert store.fetch(BOB, 10, NOW) == [first, second]
 
     def test_fetch_respects_limit(self, store: MailboxStorePort) -> None:
         for _ in range(3):

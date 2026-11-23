@@ -55,7 +55,6 @@ def make_content(**over: Any) -> MessageContent:
         "seq": 1,
         "sent_at_ms": 1_700_000_000_000,
         "body": "hi",
-        "peer_seq": 0,
     }
     args.update(over)
     return MessageContent(**args)
@@ -284,7 +283,7 @@ def test_content_is_deterministic_and_canonical() -> None:
     assert c.to_bytes() == make_content().to_bytes()
     keys = list(json.loads(c.to_bytes()))
     assert keys == sorted(keys)
-    assert set(keys) == {"v", "kind", "conv", "seq", "sent_at_ms", "body", "peer_seq"}
+    assert set(keys) == {"v", "kind", "conv", "seq", "sent_at_ms", "body"}
 
 
 @pytest.mark.parametrize("kind", list(MessageKind))
@@ -310,20 +309,6 @@ def test_content_rejects_empty_text_but_not_empty_contact_messages() -> None:
     with pytest.raises(FormatError):
         make_content(body="")
     make_content(kind=MessageKind.CONTACT_ACCEPT, body="")
-
-
-@pytest.mark.parametrize("peer_seq", [-1, True, 1.5, "0", None])
-def test_content_rejects_invalid_peer_seq(peer_seq: Any) -> None:
-    with pytest.raises(FormatError):
-        make_content(peer_seq=peer_seq)
-
-
-def test_content_requires_peer_seq_on_the_wire() -> None:
-    obj = json.loads(make_content(peer_seq=7).to_bytes())
-    assert obj["peer_seq"] == 7
-    del obj["peer_seq"]
-    with pytest.raises(FormatError):
-        MessageContent.from_bytes(json.dumps(obj).encode())
 
 
 # ---------------- receipts ----------------

@@ -102,7 +102,6 @@ def make_received(
     sender: Person = BOB,
     me: Person = ALICE,
     seq: int = 1,
-    peer_seq: int = 0,
     body: str | None = None,
     kind: MessageKind = MessageKind.TEXT,
     message_id: MessageId | None = None,
@@ -114,7 +113,6 @@ def make_received(
         conversation_id=conversation_of(sender, me),
         sender=sender.user_id,
         seq=seq,
-        peer_seq=peer_seq,
         kind=kind,
         body=default_body(kind) if body is None else body,
         sent_at_ms=sent_at_ms,
@@ -127,7 +125,6 @@ def make_outgoing(
     sender: Person = ALICE,
     receiver: Person = BOB,
     seq: int = 1,
-    peer_seq: int = 0,
     body: str | None = None,
     kind: MessageKind = MessageKind.TEXT,
     message_id: MessageId | None = None,
@@ -139,7 +136,7 @@ def make_outgoing(
     crypto = FakeCrypto()
     conversation_id = conversation_of(sender, receiver)
     body = default_body(kind) if body is None else body
-    content = MessageContent(kind, conversation_id, seq, sent_at_ms, body, peer_seq)
+    content = MessageContent(kind, conversation_id, seq, sent_at_ms, body)
     envelope = Envelope.build(
         message_id=message_id or next_message_id(),
         sender=sender.user_id,
@@ -151,7 +148,6 @@ def make_outgoing(
         envelope=envelope,
         conversation_id=conversation_id,
         seq=seq,
-        peer_seq=peer_seq,
         kind=kind,
         body=body,
         sent_at_ms=sent_at_ms,

@@ -82,16 +82,9 @@ class MessageContent:
     """What goes inside the encryption. Only the receiver sees it.
 
     ``seq`` is the per-sender, per-conversation counter (starts at 1) used to
-    order messages and detect gaps. Every kind, receipts included, uses it.
-
-    ``peer_seq`` is the highest ``seq`` the sender had received CONTIGUOUSLY
-    from the other side of the conversation when this message was created
-    (0 if none). It makes the merged order of both sides causal: a reply is
-    always shown after the message it answers, whatever the wall clocks say
-    (see ``source.domain.conversation_order``).
-
-    Both live here and not in the envelope so that mailboxes cannot observe
-    the pace or order of a conversation.
+    order messages and detect gaps. Every kind, receipts included, uses it. It
+    lives here and not in the envelope so that mailboxes cannot observe the
+    pace or order of a conversation.
     """
 
     kind: MessageKind
@@ -99,7 +92,6 @@ class MessageContent:
     seq: int
     sent_at_ms: int
     body: str
-    peer_seq: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, MessageKind):
@@ -110,8 +102,6 @@ class MessageContent:
             raise FormatError("seq must be an integer >= 1")
         if not is_int(self.sent_at_ms) or self.sent_at_ms < 0:
             raise FormatError("sent_at_ms must be an integer >= 0")
-        if not is_int(self.peer_seq) or self.peer_seq < 0:
-            raise FormatError("peer_seq must be an integer >= 0")
         if not isinstance(self.body, str):
             raise FormatError("body must be text")
         try:
@@ -145,7 +135,6 @@ class MessageContent:
                 "seq": self.seq,
                 "sent_at_ms": self.sent_at_ms,
                 "body": self.body,
-                "peer_seq": self.peer_seq,
             }
         )
 
@@ -153,9 +142,7 @@ class MessageContent:
     def from_bytes(cls, data: bytes) -> MessageContent:
         """Rebuild the content from bytes that have already been decrypted."""
         obj = parse_json_object(data, MAX_CIPHERTEXT_BYTES)
-        require_keys(
-            obj, {"v", "kind", "conv", "seq", "sent_at_ms", "body", "peer_seq"}
-        )
+        require_keys(obj, {"v", "kind", "conv", "seq", "sent_at_ms", "body"})
         if obj["v"] != ENVELOPE_VERSION:
             raise FormatError("unsupported content version")
         try:
@@ -165,7 +152,6 @@ class MessageContent:
                 seq=obj["seq"],
                 sent_at_ms=obj["sent_at_ms"],
                 body=obj["body"],
-                peer_seq=obj["peer_seq"],
             )
         except ValueError as exc:
             if isinstance(exc, FormatError):
