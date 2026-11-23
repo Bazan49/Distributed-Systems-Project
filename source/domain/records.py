@@ -13,7 +13,8 @@ from typing import Generic, TypeVar
 from source.domain.identifiers import UserId
 from source.domain.node_id import NodeId
 
-T = TypeVar("T")
+# Covariant: a reply is immutable, so a NodeReply[int] is also a NodeReply[object].
+T_co = TypeVar("T_co", covariant=True)
 
 
 @dataclass(frozen=True)
@@ -51,14 +52,25 @@ class DirectSendResult(Enum):
 
 
 @dataclass(frozen=True)
-class NodeReply(Generic[T]):
+class NodeReply(Generic[T_co]):
     """The answer (or failure) of ONE service node to ONE call.
 
     A failed call is data, not an exception, so quorum logic can count replies
     without try/except around every node.
+
+    ``refused`` tells apart the two kinds of failure: ``True`` means the node
+    ANSWERED but rejected the request (bad signature, stale record...), so it
+    is alive; ``False`` with ``ok=False`` means it did not answer at all
+    (timeout, crash, unknown node). Membership needs the difference.
     """
 
     node: NodeId
     ok: bool
-    value: T | None = None
+    value: T_co | None = None
     error: str | None = None
+    refused: bool = False
+
+    @property
+    def answered(self) -> bool:
+        """Did the node answer at all (accepting or refusing)?"""
+        return self.ok or self.refused

@@ -102,7 +102,9 @@ class InMemoryNodeGateway:
             try:
                 value = action(node)
             except (MailboxAccessDenied, _Refused) as exc:
-                replies.append(NodeReply(node=node_id, ok=False, error=str(exc)))
+                replies.append(
+                    NodeReply(node=node_id, ok=False, error=str(exc), refused=True)
+                )
                 continue
             replies.append(NodeReply(node=node_id, ok=True, value=value))
             ok_count += 1
