@@ -274,6 +274,31 @@ def test_an_expired_record_is_hidden_even_while_still_stored(
     assert service.resolve(ALICE) is None  # but never handed out
 
 
+def test_an_older_record_cannot_come_back_after_the_newer_one_was_purged(
+    service: DirectoryService, clock: ManualClock
+) -> None:
+    """Alice publishes v3 (10 min) and then v5 (1 min) and goes offline. An
+    attacker who captured v3 replays it after the node purged the expired v5."""
+    old = record_for(ALICE_KEYS, clock, version=3, lease_ms=10 * MINUTE)
+    service.publish(old)
+    service.publish(record_for(ALICE_KEYS, clock, version=5, lease_ms=MINUTE))
+    clock.advance(2 * MINUTE)
+    assert service.purge_expired() == 1
+    assert service.publish(old) is PublishOutcome.REJECTED_STALE
+    assert service.resolve(ALICE) is None  # Alice stays offline
+
+
+def test_after_a_purge_a_newer_version_is_still_accepted(
+    service: DirectoryService, clock: ManualClock
+) -> None:
+    service.publish(record_for(ALICE_KEYS, clock, version=5, lease_ms=MINUTE))
+    clock.advance(2 * MINUTE)
+    service.purge_expired()
+    renewed = record_for(ALICE_KEYS, clock, version=6)
+    assert service.publish(renewed) is PublishOutcome.STORED
+    assert service.resolve(ALICE) == renewed
+
+
 def test_purge_removes_only_expired_records_and_counts_them(
     service: DirectoryService, clock: ManualClock
 ) -> None:
