@@ -29,7 +29,7 @@ import sqlite3
 
 from source.application.ports.errors import StoreError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION_ID = 0x4D53474C  # "MSGL"
 
 _V1: tuple[str, ...] = (
@@ -115,9 +115,47 @@ _V1: tuple[str, ...] = (
     """,
 )
 
+# Version 2: persistent ordering state of incoming streams (one per
+# conversation and sender), committed together with the history it releases.
+_V2: tuple[str, ...] = (
+    # ``skipped`` is a JSON array of the seqs given up on that may still
+    # arrive late. It is bounded by the ordering policy's late window, so
+    # rewriting it whole on every commit is cheap.
+    """
+    CREATE TABLE inbound_streams (
+        conversation_id TEXT    NOT NULL,
+        sender          TEXT    NOT NULL,
+        next_seq        INTEGER NOT NULL CHECK (next_seq >= 1),
+        skipped         TEXT    NOT NULL,
+        PRIMARY KEY (conversation_id, sender)
+    ) WITHOUT ROWID
+    """,
+    # Messages waiting behind a gap, already decrypted (the history keeps
+    # plaintext too). Same columns as ``received_messages`` so both are read
+    # the same way. Deleting a stream deletes its buffer.
+    """
+    CREATE TABLE inbound_pending (
+        conversation_id TEXT    NOT NULL,
+        sender          TEXT    NOT NULL,
+        seq             INTEGER NOT NULL CHECK (seq >= 1),
+        message_id      TEXT    NOT NULL,
+        kind            TEXT    NOT NULL,
+        body            TEXT    NOT NULL,
+        sent_at_ms      INTEGER NOT NULL CHECK (sent_at_ms >= 0),
+        received_at_ms  INTEGER NOT NULL CHECK (received_at_ms >= 0),
+        PRIMARY KEY (conversation_id, sender, seq),
+        UNIQUE (conversation_id, sender, message_id),
+        FOREIGN KEY (conversation_id, sender)
+            REFERENCES inbound_streams (conversation_id, sender)
+            ON DELETE CASCADE
+    ) WITHOUT ROWID
+    """,
+)
+
 # _MIGRATIONS[n] upgrades a database from version n to n + 1.
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     0: _V1,
+    1: _V2,
 }
 
 

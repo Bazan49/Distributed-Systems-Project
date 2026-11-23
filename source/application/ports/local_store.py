@@ -1,12 +1,12 @@
 """LocalStorePort: everything the client persists on the user's device."""
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import Protocol, runtime_checkable
 
 from source.domain.contacts import Contact, ContactState
 from source.domain.identifiers import ConversationId, MessageId, UserId
 from source.domain.identity import LocalIdentity
-from source.domain.messages import OutgoingMessage, ReceivedMessage
+from source.domain.messages import InboundState, OutgoingMessage, ReceivedMessage
 from source.domain.outgoing_status import OutgoingStatus
 
 
@@ -62,10 +62,64 @@ class LocalStorePort(Protocol):
     def save_incoming_message(self, message: ReceivedMessage) -> bool:
         """Store the message AND mark its id as seen in ONE atomic transaction.
 
+        It bypasses the ordering state: use ``commit_inbound`` for messages
+        that went through an ``InboundStream``, so that the history and the
+        stream state can never disagree.
+
         Returns:
             True if stored; False if the id was already seen (a duplicate;
             nothing is written). A crash can never leave a stored message
             without its seen id, or the other way round.
+        """
+        ...
+
+    # --- incoming ordering state (one stream per conversation and sender) ---
+    def load_inbound_stream(
+        self, conversation_id: ConversationId, sender: UserId
+    ) -> InboundState | None:
+        """Return the last committed ordering state of ``sender`` in this conversation.
+
+        ``None`` if nothing was ever committed for it: the caller starts a
+        fresh ``InboundStream``. Otherwise the caller rebuilds it with
+        ``InboundStream.restore``. Buffered messages come back exactly as
+        committed, so a message that was buffered (and possibly already
+        acknowledged to its sender) is never lost across a restart.
+        """
+        ...
+
+    def commit_inbound(
+        self,
+        conversation_id: ConversationId,
+        sender: UserId,
+        released: Sequence[ReceivedMessage],
+        state: InboundState,
+    ) -> None:
+        """Apply ONE step of an incoming stream, in ONE atomic transaction.
+
+        * every message in ``released`` is appended to the history, in the
+          given order, and its id is marked as seen;
+        * the stored state of ``(conversation_id, sender)`` is replaced by
+          ``state``: its ``next_seq``, its skipped seqs and its buffered
+          messages.
+
+        Either all of it is durable when the method returns, or none of it
+        is written. A crash can therefore never leave a message both in the
+        history and in the buffer, or in neither.
+
+        Call it after every ``offer``/``expire`` that changed the stream,
+        with what that call released and the stream's new ``snapshot()``.
+        ``released`` may be empty (a message was only buffered, or a gap was
+        skipped with nothing behind it).
+
+        Raises:
+            ValueError: the arguments are inconsistent (see
+                ``domain.messages.check_inbound_commit``); ``state.next_seq``
+                is lower than the committed one (a stream never goes back,
+                so an old snapshot cannot overwrite a newer one); or a
+                buffered seq already committed now holds a different message
+                (buffered messages are immutable).
+            AlreadyExistsError: a released message id was already seen.
+            In every case nothing is written.
         """
         ...
 
