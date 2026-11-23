@@ -22,7 +22,8 @@ class NodeGatewayPort(Protocol):
       never sees Ray exceptions.
     * A node that REFUSES a request (bad signature, stale or replayed
       request, rejected record) also answers ``ok=False``, with the reason in
-      ``error``. The caller must not retry the same signed request.
+      ``error`` and ``refused=True``: it is alive, and membership must not
+      count it as a failure. The caller must not retry the same signed request.
     * The result has at most one reply per node asked.
     * Envelopes, mailbox requests and records cross the boundary as domain
       objects. Adapters that cross a process boundary should send
