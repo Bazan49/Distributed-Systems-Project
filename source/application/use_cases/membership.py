@@ -37,12 +37,25 @@ class MembershipService:
         """Record that ``node`` just successfully responded."""
         self._view.record_success(node, self._clock.monotonic_ms())
 
+    def report_failure(self, node: NodeId) -> None:
+        """Record that ``node`` did not answer (timeout, crash, actor error).
+
+        Only for nodes that did NOT answer. A ``NodeReply`` with ``ok=False``
+        can also mean the node answered and refused the request (bad
+        signature, stale request): that node is alive and must not be
+        reported here.
+        """
+        self._view.record_failure(node, self._clock.monotonic_ms())
+
     def get_state(self, node: NodeId) -> NodeState:
         """Current state of ``node``."""
         return self._view.state_of(node, self._clock.monotonic_ms())
 
     def get_active_nodes(self, candidates: Iterable[NodeId]) -> list[NodeId]:
-        """``candidates`` that are not DEAD (the quorum logic skips dead nodes)."""
+        """``candidates`` that are not DEAD (the quorum logic skips dead nodes).
+
+        A node never contacted is included: a new client must try its nodes.
+        """
         return self._view.active_nodes(candidates, self._clock.monotonic_ms())
 
     def prune_dead(self) -> int:
