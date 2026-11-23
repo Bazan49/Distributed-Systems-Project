@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from source.domain.canonical import FormatError, is_int
 from source.domain.envelope import Envelope, MessageContent, MessageKind
 from source.domain.identifiers import ConversationId, MessageId, UserId
+from source.domain.ordering import StreamSnapshot
 from source.domain.outgoing_status import OutgoingStatus
 
 
@@ -83,3 +85,67 @@ class OutgoingMessage:
     @property
     def receiver(self) -> UserId:
         return self.envelope.receiver
+
+
+InboundState = StreamSnapshot[ReceivedMessage]
+"""The persisted ordering state of one incoming stream: buffered messages are
+kept already decrypted, as the ``ReceivedMessage`` they will become."""
+
+
+def check_inbound_commit(
+    conversation_id: ConversationId,
+    sender: UserId,
+    released: Sequence[ReceivedMessage],
+    state: InboundState,
+) -> None:
+    """Fail unless ``released`` and ``state`` describe ONE step of ONE stream.
+
+    This is the consistency rule behind ``LocalStorePort.commit_inbound``,
+    shared by every adapter so they all accept and refuse exactly the same
+    input. It only looks at the arguments; the rules that need the stored
+    data (seen ids, ``next_seq`` never going back) are checked by the store.
+
+    Rules:
+
+    * every released and every buffered message belongs to
+      ``(conversation_id, sender)``;
+    * every released message is BEHIND ``state.next_seq``: after a step,
+      whatever was released (in order or late) is settled;
+    * every buffered ``Pending`` describes its own message (same seq, same id);
+    * no ``MessageId`` appears twice across released and buffered messages.
+
+    Raises:
+        ValueError: any rule above is broken.
+    """
+    if not isinstance(conversation_id, ConversationId) or not isinstance(
+        sender, UserId
+    ):
+        raise ValueError("invalid conversation_id or sender")
+    if not isinstance(state, StreamSnapshot):
+        raise ValueError("state must be a StreamSnapshot")
+
+    def belongs(message: object) -> bool:
+        return (
+            isinstance(message, ReceivedMessage)
+            and message.conversation_id == conversation_id
+            and message.sender == sender
+        )
+
+    ids: set[MessageId] = set()
+    for message in released:
+        if not belongs(message):
+            raise ValueError("a released message belongs to another stream")
+        if message.seq >= state.next_seq:
+            raise ValueError(f"released seq {message.seq} is not behind next_seq")
+        if message.message_id in ids:
+            raise ValueError(f"message {message.message_id} is released twice")
+        ids.add(message.message_id)
+    for pending in state.pending:
+        item = pending.item
+        if not belongs(item):
+            raise ValueError("a buffered message belongs to another stream")
+        if item.seq != pending.seq or item.message_id != pending.message_id:
+            raise ValueError("a buffered entry does not match its message")
+        if item.message_id in ids:
+            raise ValueError(f"message {item.message_id} is released and buffered")
+        ids.add(item.message_id)
