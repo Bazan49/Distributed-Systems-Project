@@ -135,11 +135,12 @@ class DirectoryService:
             return _FROM_CHECK[check]
 
         stored = self._store.get(record.user_id)
-        if stored is not None:
-            if stored == record:
-                return PublishOutcome.UNCHANGED
-            if record.version <= stored.version:
-                return PublishOutcome.REJECTED_STALE
+        if stored == record:
+            return PublishOutcome.UNCHANGED
+        # Compare with the highest version EVER stored, not only the current
+        # record: after a purge, an older but still valid record must not return.
+        if record.version <= self._store.highest_version(record.user_id):
+            return PublishOutcome.REJECTED_STALE
         self._store.put(record)
         return PublishOutcome.STORED
 
@@ -154,5 +155,9 @@ class DirectoryService:
         return record
 
     def purge_expired(self) -> int:
-        """Physically remove every expired record; return how many."""
+        """Physically remove every expired record; return how many.
+
+        The store keeps each user's highest version, so purging never lets an
+        older record back in.
+        """
         return self._store.delete_expired(self._clock.now_ms())

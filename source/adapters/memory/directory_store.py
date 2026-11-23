@@ -7,12 +7,19 @@ class InMemoryDirectoryStore:
 
     def __init__(self) -> None:
         self._records: dict[UserId, DirectoryRecord] = {}
+        self._highest: dict[UserId, int] = {}  # survives delete_expired
 
     def get(self, user_id: UserId) -> DirectoryRecord | None:
         return self._records.get(user_id)
 
     def put(self, record: DirectoryRecord) -> None:
         self._records[record.user_id] = record
+        self._highest[record.user_id] = max(
+            record.version, self._highest.get(record.user_id, 0)
+        )
+
+    def highest_version(self, user_id: UserId) -> int:
+        return self._highest.get(user_id, 0)
 
     def delete_expired(self, now_ms: int) -> int:
         expired = [

@@ -67,3 +67,31 @@ class DirectoryStoreContract:
     ) -> None:
         store.put(make_record(expires_at_ms=NOW))
         assert store.delete_expired(NOW) == 1
+
+    # ---- highest version (anti-replay memory) ----
+    def test_highest_version_of_an_unknown_user_is_zero(
+        self, store: DirectoryStorePort
+    ) -> None:
+        assert store.highest_version(ALICE) == 0
+
+    def test_highest_version_follows_put(self, store: DirectoryStorePort) -> None:
+        store.put(make_record(version=3))
+        assert store.highest_version(ALICE) == 3
+        store.put(make_record(version=7))
+        assert store.highest_version(ALICE) == 7
+        assert store.highest_version(BOB) == 0
+
+    def test_highest_version_never_decreases(self, store: DirectoryStorePort) -> None:
+        """``put`` overwrites the record, but the highest version stays."""
+        store.put(make_record(version=7))
+        store.put(make_record(version=2))
+        assert store.get(ALICE) == make_record(version=2)
+        assert store.highest_version(ALICE) == 7
+
+    def test_highest_version_survives_delete_expired(
+        self, store: DirectoryStorePort
+    ) -> None:
+        store.put(make_record(version=5, expires_at_ms=NOW - 1))
+        assert store.delete_expired(NOW) == 1
+        assert store.get(ALICE) is None
+        assert store.highest_version(ALICE) == 5
