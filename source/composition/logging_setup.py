@@ -2,7 +2,10 @@
 
 Call ``configure_logging`` ONCE, at the start of every process:
 
-* the CLI / demo:  ``configure_logging(process="demo")``
+* a client actor, when it builds its client::
+
+      configure_logging(process=f"client-{device}", device=device)
+
 * a Ray node actor, in its ``__init__`` (each actor is its own process, and
   the configuration of the driver does NOT reach it)::
 
@@ -10,7 +13,7 @@ Call ``configure_logging`` ONCE, at the start of every process:
 
 Nothing is written to the console: the console belongs to the users. Each
 record is written and flushed at once, so the file can be followed live
-(``tail -f logs/demo.jsonl``). Runs append to the same file; each run gets
+(``tail -f logs/client-alice.jsonl``). Runs append to the same file; each run gets
 its own ``run`` id so they can be told apart.
 
 The folder comes from the argument, else from ``P08_LOG_DIR``, else
@@ -64,8 +67,8 @@ def configure_logging(
     in a restarted Ray actor) does not duplicate lines.
 
     Args:
-        process: names the file and the ``process`` field (``demo``,
-            ``node-2``, ``client-3fa2c1d0``...).
+        process: names the file and the ``process`` field (``node-2``,
+            ``client-alice``...).
         log_dir: folder of the log files; created if missing.
             Defaults to ``P08_LOG_DIR``, else ``logs``.
         level: ``DEBUG``, ``INFO``, ``WARNING`` or ``ERROR``.

@@ -21,12 +21,12 @@ def read(path: Path) -> list[dict[str, object]]:
 
 
 def test_it_writes_json_lines_to_log_dir_slash_process(tmp_path: Path) -> None:
-    path = configure_logging(process="demo", log_dir=tmp_path / "logs")
+    path = configure_logging(process="client-alice", log_dir=tmp_path / "logs")
 
-    assert path == tmp_path / "logs" / "demo.jsonl"
+    assert path == tmp_path / "logs" / "client-alice.jsonl"
     first = read(path)[0]
     assert first["event"] == "logging.configured"
-    assert first["process"] == "demo"
+    assert first["process"] == "client-alice"
     assert isinstance(first["run"], str) and len(first["run"]) == 8
 
 
@@ -34,7 +34,7 @@ def test_each_event_is_on_disk_at_once_so_it_can_be_followed_live(
     tmp_path: Path,
 ) -> None:
     """``tail -f`` must see an event as soon as it happens, without closing."""
-    path = configure_logging(process="demo", log_dir=tmp_path)
+    path = configure_logging(process="client-alice", log_dir=tmp_path)
 
     get_logger("x").info("message.queued", seq=1)
 
@@ -56,16 +56,16 @@ def test_the_context_reaches_the_file(tmp_path: Path) -> None:
 
 
 def test_runs_append_and_are_told_apart_by_their_run_id(tmp_path: Path) -> None:
-    path = configure_logging(process="demo", log_dir=tmp_path)
-    configure_logging(process="demo", log_dir=tmp_path)
+    path = configure_logging(process="client-alice", log_dir=tmp_path)
+    configure_logging(process="client-alice", log_dir=tmp_path)
 
     runs = [line["run"] for line in read(path) if line["event"] == "logging.configured"]
     assert len(runs) == 2 and runs[0] != runs[1]
 
 
 def test_configuring_again_does_not_duplicate_lines(tmp_path: Path) -> None:
-    configure_logging(process="demo", log_dir=tmp_path)
-    path = configure_logging(process="demo", log_dir=tmp_path)
+    configure_logging(process="client-alice", log_dir=tmp_path)
+    path = configure_logging(process="client-alice", log_dir=tmp_path)
 
     get_logger("x").info("once")
 
@@ -73,7 +73,7 @@ def test_configuring_again_does_not_duplicate_lines(tmp_path: Path) -> None:
 
 
 def test_the_level_filters_events(tmp_path: Path) -> None:
-    path = configure_logging(process="demo", log_dir=tmp_path, level="WARNING")
+    path = configure_logging(process="client-alice", log_dir=tmp_path, level="WARNING")
     log = get_logger("x")
 
     log.info("hidden")
@@ -86,26 +86,26 @@ def test_the_level_can_come_from_the_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(LEVEL_ENV_VAR, "debug")
-    configure_logging(process="demo", log_dir=tmp_path)
+    configure_logging(process="client-alice", log_dir=tmp_path)
     assert logging.getLogger().level == logging.DEBUG
 
 
 def test_noisy_libraries_are_quieted(tmp_path: Path) -> None:
-    configure_logging(process="demo", log_dir=tmp_path, level="DEBUG")
+    configure_logging(process="client-alice", log_dir=tmp_path, level="DEBUG")
     assert logging.getLogger("ray").level == logging.WARNING
 
 
 def test_nothing_goes_to_the_console(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    configure_logging(process="demo", log_dir=tmp_path)
+    configure_logging(process="client-alice", log_dir=tmp_path)
     get_logger("x").warning("not.on.screen")
 
     captured = capsys.readouterr()
     assert "not.on.screen" not in captured.out + captured.err
 
 
-@pytest.mark.parametrize("process", ["", "Demo", "a b", "../x", "-x"])
+@pytest.mark.parametrize("process", ["", "Client", "a b", "../x", "-x"])
 def test_the_process_name_must_be_safe_as_a_file_name(
     tmp_path: Path, process: str
 ) -> None:
@@ -115,7 +115,7 @@ def test_the_process_name_must_be_safe_as_a_file_name(
 
 def test_an_unknown_level_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
-        configure_logging(process="demo", log_dir=tmp_path, level="LOUD")
+        configure_logging(process="client-alice", log_dir=tmp_path, level="LOUD")
 
 
 def test_the_folder_can_come_from_the_environment(

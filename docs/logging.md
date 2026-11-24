@@ -10,7 +10,7 @@ leerlos y cómo añadirlos**.
 >   `log.info("componente.evento", campo=valor)`.
 > - **Nunca** se debe registrar el texto de los mensajes, contraseñas, claves, enlaces ni
 >   alias. El formateador los tacha si se escapan, y una prueba lo verifica.
-> - Para leerlos en vivo: `tail -f logs/demo.jsonl | python tools/logview.py`.
+> - Para leerlos en vivo: `tail -f logs/client-alice.jsonl | python tools/logview.py`.
 
 ## Utilidad de los logs
 
@@ -29,25 +29,24 @@ leerlos y cómo añadirlos**.
 
 | Proceso | Archivo | Quién lo configura |
 |---|---|---|
-| La demo (CLI, todos los usuarios en un proceso) | `logs/demo.jsonl` | `python -m source.composition` |
 | Un nodo de servicio (actor de Ray) | `logs/node-<id>.jsonl` | El `__init__` del actor (ver sección 7) |
-| Un cliente (actor de Ray) | `logs/client-<id>.jsonl` | El arranque del cliente |
+| Un cliente (actor de Ray) | `logs/client-<dispositivo>.jsonl` | `RayClientFactory`, al construir el cliente dentro del actor |
 
 - La carpeta es **`logs/`**, relativa al directorio desde el que se lanza.
-  Se cambia con `--log-dir` (en la CLI) o con la variable de entorno
+  Se cambia con el argumento `log_dir` o con la variable de entorno
   **`P08_LOG_DIR`**. Con Ray, usad una **ruta absoluta** (sección 7).
 - **`logs/` y `*.jsonl` están en `.gitignore`**: los logs nunca se suben al repo.
 - Las ejecuciones **se añaden** al mismo archivo, sin borrar lo anterior. Cada
   ejecución lleva su propio **`run`** (8 caracteres aleatorios), así que se
   pueden separar.
 - Cada evento **se escribe en el disco en el momento**, así que el archivo se
-  puede seguir en vivo mientras se usa la demo.
+  puede seguir en vivo mientras el sistema funciona.
 
 ## Cómo leerlos
 
 ```bash
-# En vivo, mientras usas la demo (en OTRA terminal):
-tail -f logs/demo.jsonl | python tools/logview.py
+# En vivo, mientras funciona un cliente (en OTRA terminal):
+tail -f logs/client-alice.jsonl | python tools/logview.py
 
 # Todos los procesos juntos, ordenados por tiempo:
 python tools/logview.py logs/*.jsonl
@@ -72,7 +71,7 @@ python tools/logview.py logs/*.jsonl --who node-2
 Con **`jq`** también se puede filtrar el JSON directamente:
 
 ```bash
-jq -c 'select(.event == "receive.rejected") | {ts, client, reason}' logs/demo.jsonl
+jq -c 'select(.event == "receive.rejected") | {ts, client, reason}' logs/client-alice.jsonl
 jq -c 'select(.level == "WARNING" or .level == "ERROR")' logs/*.jsonl
 ```
 
@@ -81,7 +80,7 @@ jq -c 'select(.level == "WARNING" or .level == "ERROR")' logs/*.jsonl
 Una línea real del archivo:
 
 ```json
-{"ts":"2026-11-23T22:28:04.512Z","level":"INFO","logger":"p08.delivery","event":"delivery.mailbox_accepted","pid":308344,"process":"demo","run":"ea8ae5fd","client":"3fa2c1d0","msg":"9c1e04b7a2f14e0d8b6c5a4f3e2d1c0b","seq":4,"attempt":0,"confirmed_by":["node-1","node-3"]}
+{"ts":"2026-11-23T22:28:04.512Z","level":"INFO","logger":"p08.delivery","event":"delivery.mailbox_accepted","pid":308344,"process":"client-alice","run":"ea8ae5fd","client":"3fa2c1d0","msg":"9c1e04b7a2f14e0d8b6c5a4f3e2d1c0b","seq":4,"attempt":0,"confirmed_by":["node-1","node-3"]}
 ```
 
 **Campos que pone el sistema**:
@@ -93,7 +92,7 @@ Una línea real del archivo:
 | `logger` | `p08.<módulo>`, por ejemplo `p08.delivery` |
 | `event` | El nombre del evento (sección 5) |
 | `pid` | El proceso del sistema operativo (distingue reinicios de un actor) |
-| `process`, `run` | El proceso lógico (`demo`, `node-2`…) y la ejecución |
+| `process`, `run` | El proceso lógico (`client-alice`, `node-2`…) y la ejecución |
 | `client` / `node` | **Quién emite** (sección 6) |
 | `error`, `traceback` | Solo con `log.exception(...)` |
 
@@ -162,8 +161,8 @@ contextos:
   ```python
   configure_logging(process="node-2", node="node-2")
   ```
-- **Contexto de llamada**, que vale mientras dura un bloque. Hace falta en la
-  **demo**, donde varios clientes viven en el mismo proceso:
+- **Contexto de llamada**, que vale mientras dura un bloque. Hace falta
+  cuando varios clientes comparten un proceso, como en las pruebas:
   ```python
   from source.application.observability import log_context, short
 
@@ -182,7 +181,7 @@ Cada proceso llama **una vez** a `configure_logging` (en
 ```python
 from source.composition.logging_setup import configure_logging
 
-configure_logging(process="demo")  # → logs/demo.jsonl
+configure_logging(process="client-alice")  # → logs/client-alice.jsonl
 configure_logging(process="node-2", node="node-2")  # → logs/node-2.jsonl
 ```
 
@@ -320,8 +319,12 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 | Evento | Nivel | Campos | Dónde | |
 |---|---|---|---|---|
 | `logging.configured` | INFO | `log_level`, `file` | `configure_logging` | ✅ |
-| `demo.started` / `demo.stopped` | INFO | `nodes`, `persistent`, `kdf` | `python -m source.composition` | ✅ |
-| `demo.node_down` / `demo.node_up` | WARNING / INFO | `node` | Laboratorio de fallos de la demo | ✅ |
+| `client.online` | INFO | `user` | Actor del cliente, al registrarse o iniciar sesión | ✅ |
+| `client.tick_failed` | ERROR | (traza) | Bucle del actor del cliente | ✅ |
+| `direct.listening` / `direct.stopped` | INFO | `user` | `RayPeerTransport` | ✅ |
+| `direct.unreachable` | DEBUG | `to`, `msg`, `reason` | `RayPeerTransport` | ✅ |
+| `direct.not_settled` | DEBUG | `msg`, `reason` | `RayPeerTransport` | ✅ |
+| `direct.rejected` | WARNING | `reason` | `RayPeerTransport` | ✅ |
 | `cli.store_failed` | ERROR | `screen` | Pantallas de la CLI | ✅ |
 
 ## Pruebas

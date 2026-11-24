@@ -58,14 +58,20 @@ def line(rec: logging.LogRecord) -> dict[str, object]:
 
 def test_the_standard_keys_come_first() -> None:
     out = line(
-        record(fields={"seq": 4}, context={"process": "demo", "client": "3fa2c1d0"})
+        record(
+            fields={"seq": 4}, context={"process": "client-alice", "client": "3fa2c1d0"}
+        )
     )
 
     assert list(out)[:5] == ["ts", "level", "logger", "event", "pid"]
     assert out["level"] == "INFO"
     assert out["logger"] == "p08.delivery"
     assert out["event"] == "delivery.mailbox_accepted"
-    assert (out["process"], out["client"], out["seq"]) == ("demo", "3fa2c1d0", 4)
+    assert (out["process"], out["client"], out["seq"]) == (
+        "client-alice",
+        "3fa2c1d0",
+        4,
+    )
 
 
 def test_the_timestamp_is_utc_iso_with_milliseconds() -> None:

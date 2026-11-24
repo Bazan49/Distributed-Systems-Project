@@ -3,7 +3,7 @@
 The shape of every line (see ``docs/logging.md``)::
 
     {"ts": "2026-11-23T22:28:04.512Z", "level": "INFO", "logger": "p08.delivery",
-     "event": "delivery.mailbox_accepted", "pid": 4242, "process": "demo",
+     "event": "delivery.mailbox_accepted", "pid": 4242, "process": "client-alice",
      "run": "a1b2c3d4", "client": "3fa2c1d0", "msg": "9c1e04b7...", "seq": 4}
 
 Privacy is enforced HERE, whatever the caller passes:

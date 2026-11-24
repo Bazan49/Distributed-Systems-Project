@@ -16,9 +16,9 @@ context, merged into every record:
 
 * the **process context** (``set_process_context``), set once at start-up:
   ``process``, ``run`` and, in a node or a Ray actor, ``node``;
-* the **call context** (``log_context``), set around a piece of work. The
-  demo runs several clients in one process, so each client marks its own
-  calls with ``client=...``.
+* the **call context** (``log_context``), set around a piece of work, for
+  example ``client=...`` when several clients share one process (as in
+  tests).
 
 This module only builds records; where they go and how they look (JSON
 Lines in a file) is configured once per process by the composition root.
@@ -77,8 +77,8 @@ def log_context(**fields: object) -> Iterator[None]:
     """Add ``fields`` to every event logged inside the ``with`` block.
 
     Blocks nest, and the previous context comes back when one ends, so a
-    client handling a direct envelope inside another client's call (as
-    happens in the demo) logs under its own identity.
+    client handling a direct envelope inside another client's call logs
+    under its own identity.
     """
     token = _call.set(MappingProxyType({**_call.get(), **fields}))
     try:

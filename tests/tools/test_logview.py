@@ -88,10 +88,12 @@ def test_filters_by_level_event_and_who(
 def test_it_reads_a_live_stream_from_stdin(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    stream = json.dumps(event("10:00:00.000", "demo.node_down", node="node-2")) + "\n"
+    stream = (
+        json.dumps(event("10:00:00.000", "node.state_changed", node="node-2")) + "\n"
+    )
     monkeypatch.setattr("sys.stdin", io.StringIO(stream + "not json\n"))
 
     lines = run(capsys)
 
-    assert "demo.node_down" in lines[0]
+    assert "node.state_changed" in lines[0]
     assert lines[1] == "not json"  # never hidden
