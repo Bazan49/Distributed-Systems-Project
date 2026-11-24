@@ -100,7 +100,7 @@ class LaunchError(RuntimeError):
 
 
 def client_actor_name(client_id: str) -> str:
-    """Name of the actor of a client """
+    """Name of the actor of a client."""
     return f"{CLIENT_ACTOR_PREFIX}{client_id}"
 
 
