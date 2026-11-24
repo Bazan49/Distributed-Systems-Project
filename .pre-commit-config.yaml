@@ -1,37 +1,41 @@
-# .pre-commit-config.yaml
+# Automatic checks run on every `git commit`.
+#
+# Every hook uses the tools of the project's virtual environment
+# (`language: system`), that is, EXACTLY the versions pinned in
+# pyproject.toml, the same ones the CI uses. Therefore:
+#   - commit with the .venv activated (`source .venv/bin/activate`);
+#   - install once per clone:  pre-commit install
 repos:
-  # Repositorio oficial de Ruff para pre-commit
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Versión de Ruff a usar
-    rev: v0.4.4
-    hooks:
-      # Hook para el linter
-      - id: ruff
-        # Argumentos: --fix para corregir automáticamente, --exit-non-zero-on-fix para fallar si hubo cambios
-        args: [--fix, --exit-non-zero-on-fix]
-      # Hook para el formateador
-      - id: ruff-format
-
-  # Repositorio de mypy para pre-commit
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
-    hooks:
-      - id: mypy
-        # Argumentos extra para mypy
-        args: [--strict]
-        # Dependencias adicionales que mypy necesita para analizar
-        additional_dependencies: [pynacl, pytest, hypothesis]
-
-  # Hook para import-linter (se ejecuta como comando local)
   - repo: local
     hooks:
-      - id: import-linter
-        name: import-linter
-        # El comando a ejecutar
-        entry: lint-imports
-        # Idioma (system = usar el comando instalado)
+      # Linter, on the Python files of the commit. It fixes what it can and
+      # still stops the commit, so the changes are reviewed and added.
+      - id: ruff-check
+        name: ruff (linter)
+        entry: ruff check --fix --exit-non-zero-on-fix
         language: system
-        # Se ejecuta siempre, sin importar qué archivos cambien
-        always_run: true
-        # Pasa si no hay archivos que coincidan
+        types_or: [python, pyi]
+
+      # Formatter, on Python and Markdown, like `ruff format --check .` in the CI.
+      - id: ruff-format
+        name: ruff (formatter)
+        entry: ruff format
+        language: system
+        types_or: [python, pyi, markdown]
+
+      # Types: on the WHOLE project, like the CI. A change in one file can
+      # break the types of another, so the files of the commit are not enough.
+      - id: mypy
+        name: mypy (types)
+        entry: mypy .
+        language: system
         pass_filenames: false
+        always_run: true
+
+      # Hexagonal architecture rules:
+      - id: import-linter
+        name: import-linter (architecture)
+        entry: lint-imports
+        language: system
+        pass_filenames: false
+        always_run: true

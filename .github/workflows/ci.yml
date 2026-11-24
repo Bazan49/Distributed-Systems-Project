@@ -1,7 +1,7 @@
-# .github/workflows/ci.yml
+# Continuous integration: runs every quality check on a clean machine.
 name: CI
 
-# ¿Cuándo se ejecuta?
+# When it runs.
 on:
   push:
     branches: [ main ]
@@ -9,39 +9,38 @@ on:
     branches: [ main ]
 
 jobs:
-  # Job 1: Calidad de código y arquitectura
+  # Job 1: code quality and architecture rules.
   quality:
     name: Lint, Types & Layering
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout del código
+      - name: Check out the code
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: pip
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          # O simplemente: pip install ruff mypy import-linter pytest
 
-      - name: Ruff (Linter)
+      - name: Ruff (linter)
         run: ruff check .
 
-      - name: Ruff (Formateador)
+      - name: Ruff (formatter)
         run: ruff format --check .
 
-      - name: Mypy (Tipos)
+      - name: Mypy (types)
         run: mypy .
 
-      - name: Import-linter (Capas)
+      - name: Import-linter (layers)
         run: lint-imports
 
-  # Job 2: Pruebas (se ejecuta en paralelo al anterior)
+  # Job 2: tests, on every supported Python version (in parallel with job 1).
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -50,19 +49,23 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - name: Checkout del código
+      - name: Check out the code
         uses: actions/checkout@v4
 
-      - name: Configurar Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Ejecutar tests con cobertura
-        run: pytest --cov=source --cov-report=term-missing --cov-fail-under=90
+      - name: Run the tests with coverage
+        # The threshold (90 %) lives in pyproject.toml: [tool.coverage.report] fail_under.
+        run: pytest --cov=source --cov-report=term-missing
+
+      - name: Coverage of domain and application (plan minimum, 90 %)
+        run: coverage report --include="source/domain/*,source/application/*" --fail-under=90
