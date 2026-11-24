@@ -89,6 +89,15 @@ def actor_name(node_id: str) -> str:
     return f"{ACTOR_PREFIX}{NodeId(node_id).value}"
 
 
+def node_resource(node_id: str) -> str:
+    """Name of the Ray custom resource that pins ``node_id`` to its machine.
+
+    The machine that keeps the node's files starts Ray with
+    ``--resources '{"service-node-<id>": 1}'``.
+    """
+    return actor_name(node_id)
+
+
 def node_of_actor(name: str) -> NodeId | None:
     """The node whose actor is called ``name``, or None if it is not a node actor."""
     if not name.startswith(ACTOR_PREFIX):
@@ -314,6 +323,7 @@ def start_service_node(
     *,
     max_restarts: int = DEFAULT_MAX_RESTARTS,
     namespace: str | None = None,
+    resources: dict[str, float] | None = None,
     **node_options: Any,
 ) -> Any:
     """Create (or find, if it already exists) the actor of ``node_id``.
@@ -322,6 +332,11 @@ def start_service_node(
     (``None`` = the current job's namespace). If an actor with that name
     already exists, it is returned as is and ``node_options`` are ignored.
     ``node_options`` are the keyword arguments of ``ServiceNode``.
+
+    ``resources``: Ray custom resources the actor needs. Used to PIN a node to
+    the machine (container) that holds its files: that machine joins Ray
+    offering the resource, so Ray can only place, and restart, the actor
+    there (see ``node_resource``).
 
     Returns:
         The Ray actor handle (``ray.actor.ActorHandle``).
@@ -332,5 +347,6 @@ def start_service_node(
         name=actor_name(node_id),
         namespace=namespace,
         max_restarts=max_restarts,
+        resources=resources or {},
         get_if_exists=True,
     ).remote(node_id, str(data_dir), namespace=namespace, **node_options)
