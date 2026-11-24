@@ -6,8 +6,8 @@ Two lifetimes:
   membership and the quorum client. They need no private key.
 * **Per session** (built on login, dropped on logout): the peer transport,
   the directory client and the delivery policy. They all depend on WHO is
-  logged in: the transport is addressed by the user's id (in Ray, the actor
-  ``cliente-<id>``), and the directory client signs presence records with the
+  logged in: the transport is addressed by the user's id (in Ray, the inbox
+  ``client-<id>``), and the directory client signs presence records with the
   private key. So ``ClientApp`` receives a factory, ``peers_for(user_id)``,
   rather than a transport.
 
@@ -29,7 +29,7 @@ transport is told to call it on login. An envelope is confirmed to its sender
 only if it was settled; otherwise the transport reports a failure and the
 sender falls back to the mailboxes.
 
-Not thread-safe: the caller serialises calls (a Ray actor does so by default).
+Not thread-safe: the caller serialises calls (the Ray client actor holds one lock).
 It depends only on ports, the other use cases and the domain: no Ray, no SQLite.
 """
 
