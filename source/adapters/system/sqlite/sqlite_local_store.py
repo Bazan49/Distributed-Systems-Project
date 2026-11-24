@@ -77,8 +77,15 @@ def _enable_wal(conn: sqlite3.Connection) -> None:
 def _connect(path: Path, busy_timeout_ms: int) -> sqlite3.Connection:
     _create_private_file(path)
     try:
+        # check_same_thread=False: the client actor uses the store from several
+        # threads (its loop, its calls, its direct receiver), always one at a
+        # time under the actor's lock. SQLite allows that; what it forbids is
+        # two threads using one connection AT ONCE, and the caller serialises.
         conn = sqlite3.connect(
-            path, timeout=busy_timeout_ms / 1000, isolation_level=None
+            path,
+            timeout=busy_timeout_ms / 1000,
+            isolation_level=None,
+            check_same_thread=False,
         )
     except sqlite3.Error as exc:
         raise StoreError(f"cannot open the database: {exc}") from exc
