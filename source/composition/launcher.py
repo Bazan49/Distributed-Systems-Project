@@ -1,4 +1,4 @@
-"""Launcher: start N service nodes and M clients from a configuration file (task 2.7).
+"""Launcher: start N service nodes and M clients from a configuration file.
 
 Usage::
 
@@ -19,7 +19,8 @@ Configuration file (JSON)
       "seeds": ["node-1"],
       "clients": [{"id": "alice"}, {"id": "bob", "options": {"alias": "Bob"}}],
       "client_factory": "source.adapters.system.ray_client:start_client_actor",
-      "ray_address": null
+      "ray_address": null,
+      "pin_nodes": false
     }
 
 =================  ========  ===================================================
@@ -38,19 +39,13 @@ Key                Required  Meaning
 ``client_factory`` no        ``module:function`` that starts ONE client actor
                              (see below). Default: the client actor of task 2.5.
 ``ray_address``    no        Address of an existing Ray cluster; ``null`` starts
-                             a local one.
+                             a local one, ``"auto"`` joins the one this
+                             machine belongs to (Docker).
+``pin_nodes``      no        ``true``: node ``x`` only runs on the Ray machine
+                             that offers the resource ``service-node-x``, the
+                             one that holds its files (Docker). Default false.
 =================  ========  ===================================================
 
-The client actor (task 2.5)
-===========================
-
-The launcher does not know the client application: it calls the factory::
-
-    factory(client_id, data_dir, *, seeds=[...], namespace="...", **options)
-        -> Ray actor handle, registered as "cliente-<client_id>"
-
-That signature is the agreement with task 2.5. If the client actor has a
-``close`` (or ``stop``) method, it is called before the actor is killed.
 """
 
 from __future__ import annotations
@@ -71,7 +66,7 @@ from typing import Any
 import ray
 from ray.exceptions import GetTimeoutError, RayError
 
-from source.adapters.system.ray_node import start_service_node
+from source.adapters.system.ray_node import node_resource, start_service_node
 from source.domain.node_id import NodeId
 
 DEFAULT_NAMESPACE = "mensajeria"
@@ -90,6 +85,7 @@ _KEYS = {
     "clients",
     "client_factory",
     "ray_address",
+    "pin_nodes",
 }
 
 ClientFactory = Callable[..., Any]
@@ -104,7 +100,7 @@ class LaunchError(RuntimeError):
 
 
 def client_actor_name(client_id: str) -> str:
-    """Name of the actor of a client (agreed with task 2.5)."""
+    """Name of the actor of a client """
     return f"{CLIENT_ACTOR_PREFIX}{client_id}"
 
 
@@ -124,6 +120,7 @@ class LaunchConfig:
     data_dir: Path
     client_factory: str
     ray_address: str | None
+    pin_nodes: bool = False
 
     def node_dir(self) -> Path:
         return self.data_dir / "nodes"
@@ -197,6 +194,9 @@ def parse_config(raw: Any, base_dir: Path) -> LaunchConfig:
     address = raw.get("ray_address")
     if address is not None:
         address = _str(address, "ray_address")
+    pin_nodes = raw.get("pin_nodes", False)
+    if not isinstance(pin_nodes, bool):
+        raise ConfigError("pin_nodes must be true or false")
     return LaunchConfig(
         nodes=nodes,
         seeds=seeds,
@@ -205,6 +205,7 @@ def parse_config(raw: Any, base_dir: Path) -> LaunchConfig:
         data_dir=data_dir if data_dir.is_absolute() else base_dir / data_dir,
         client_factory=factory,
         ray_address=address,
+        pin_nodes=pin_nodes,
     )
 
 
@@ -246,7 +247,7 @@ def resolve_factory(spec: str) -> ClientFactory:
 
 
 # ============================ the running cluster ============================
-def _wait_ready(handles: dict[str, Any], timeout_ms: int) -> None:
+def wait_ready(handles: dict[str, Any], timeout_ms: int) -> None:
     """Wait until every actor has run its ``__init__`` (``__ray_ready__``)."""
     refs = {handle.__ray_ready__.remote(): name for name, handle in handles.items()}
     try:
@@ -259,7 +260,35 @@ def _wait_ready(handles: dict[str, Any], timeout_ms: int) -> None:
         raise LaunchError(f"an actor failed to start: {exc}") from exc
 
 
-def _stop_actor(handle: Any, timeout_ms: int) -> None:
+def start_node(config: LaunchConfig, node: NodeId) -> Any:
+    """Start (or find) the actor of ``node`` with the configuration's settings.
+
+    Always over the same folder, so a node started again finds its data.
+    """
+    return start_service_node(
+        node.value,
+        config.node_dir(),
+        namespace=config.namespace,
+        resources={node_resource(node.value): 1} if config.pin_nodes else None,
+    )
+
+
+def start_client(config: LaunchConfig, spec: ClientSpec, factory: ClientFactory) -> Any:
+    """Start the actor of one client through the factory (always the same arguments)."""
+    return factory(
+        spec.client_id,
+        str(config.client_dir(spec.client_id)),
+        seeds=[s.value for s in config.seeds],
+        namespace=config.namespace,
+        **spec.options,
+    )
+
+
+def _no_clients(*_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover
+    raise LaunchError("no client factory")
+
+
+def stop_actor(handle: Any, timeout_ms: int) -> None:
     """Let the actor close its databases if it can, then kill it for good."""
     for method in ("close", "stop"):
         if hasattr(handle, method):
@@ -275,8 +304,9 @@ class RunningCluster:
     """The actors started by ``launch``. Stop it with ``stop()``."""
 
     config: LaunchConfig
-    nodes: dict[NodeId, Any] = field(default_factory=dict)
-    clients: dict[str, Any] = field(default_factory=dict)
+    client_factory: ClientFactory = _no_clients
+    nodes: dict[NodeId, Any] = field(default_factory=dict)  # running nodes only
+    clients: dict[str, Any] = field(default_factory=dict)  # running clients only
 
     def stop(self, timeout_ms: int = DEFAULT_STOP_TIMEOUT_MS) -> None:
         """Stop the clients, then the nodes. Safe to call more than once.
@@ -286,18 +316,14 @@ class RunningCluster:
         Its files stay on disk, so launching again picks the data up.
         """
         for client_id in list(self.clients):
-            _stop_actor(self.clients.pop(client_id), timeout_ms)
+            stop_actor(self.clients.pop(client_id), timeout_ms)
         for node in list(self.nodes):
-            _stop_actor(self.nodes.pop(node), timeout_ms)
+            stop_actor(self.nodes.pop(node), timeout_ms)
 
     def summary(self) -> str:
         nodes = ", ".join(n.value for n in self.nodes)
         clients = ", ".join(client_actor_name(c) for c in self.clients)
         return f"namespace={self.config.namespace} nodes=[{nodes}] clients=[{clients}]"
-
-
-def _no_clients(*_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover
-    raise LaunchError("no client factory")
 
 
 def launch(
@@ -323,24 +349,15 @@ def launch(
             include_dashboard=False,
             log_to_driver=False,
         )
-    cluster = RunningCluster(config)
+    cluster = RunningCluster(config, client_factory=factory)
     try:
         for node in config.nodes:
-            cluster.nodes[node] = start_service_node(
-                node.value, config.node_dir(), namespace=config.namespace
-            )
-        _wait_ready({n.value: h for n, h in cluster.nodes.items()}, ready_timeout_ms)
+            cluster.nodes[node] = start_node(config, node)
+        wait_ready({n.value: h for n, h in cluster.nodes.items()}, ready_timeout_ms)
 
-        seeds = [s.value for s in config.seeds]
         for spec in config.clients:
-            cluster.clients[spec.client_id] = factory(
-                spec.client_id,
-                str(config.client_dir(spec.client_id)),
-                seeds=seeds,
-                namespace=config.namespace,
-                **spec.options,
-            )
-        _wait_ready(cluster.clients, ready_timeout_ms)
+            cluster.clients[spec.client_id] = start_client(config, spec, factory)
+        wait_ready(cluster.clients, ready_timeout_ms)
     except BaseException:
         cluster.stop()
         raise
@@ -355,11 +372,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Start the service nodes and clients of a configuration file.",
     )
     parser.add_argument("config", help="path of the JSON configuration file")
+    parser.add_argument(
+        "--ready-timeout-ms",
+        type=int,
+        default=DEFAULT_READY_TIMEOUT_MS,
+        help="how long to wait for every actor to start (Docker workers may "
+        "join the cluster a bit later)",
+    )
     args = parser.parse_args(argv)
 
     try:
         config = load_config(args.config)
-        cluster = launch(config)
+        cluster = launch(config, ready_timeout_ms=args.ready_timeout_ms)
     except (ConfigError, LaunchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

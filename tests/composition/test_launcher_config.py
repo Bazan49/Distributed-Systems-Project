@@ -1,4 +1,4 @@
-"""The launcher's configuration file (task 2.7), without Ray."""
+"""The launcher's configuration file, without Ray."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ def test_a_minimal_configuration_gets_the_defaults() -> None:
     assert cfg.data_dir == BASE / "data"
     assert cfg.client_factory == DEFAULT_CLIENT_FACTORY
     assert cfg.ray_address is None
+    assert cfg.pin_nodes is False
 
 
 def test_a_full_configuration_is_read_as_written() -> None:
@@ -83,6 +84,7 @@ def test_a_full_configuration_is_read_as_written() -> None:
         (config(client_factory="no_colon"), "client_factory"),
         (config(ray_address=""), "ray_address"),
         (config(nodo=["node-1"]), "unknown keys"),
+        (config(pin_nodes="yes"), "pin_nodes"),
     ],
 )
 def test_invalid_configurations_say_what_is_wrong(raw: Any, message: str) -> None:
