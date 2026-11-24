@@ -18,11 +18,13 @@ from source.adapters.system.ray_node import (
     MAILBOX_DB,
     ServiceNode,
     actor_name,
+    node_of_actor,
 )
 from source.application.ports.errors import StoreError
 from source.application.use_cases.directory import DEFAULT_MAX_LEASE_MS
 from source.application.use_cases.mailbox import DEFAULT_TTL_MS
 from source.domain.envelope import Envelope
+from source.domain.node_id import NodeId
 from source.domain.records import PutOutcome
 from tests.contracts.mailbox_store_contract import make_envelope
 from tests.support.builders import (
@@ -250,3 +252,40 @@ def test_the_node_tracks_its_peers(node: ServiceNode, clock: ManualClock) -> Non
     clock.advance(15_000)
     assert node.peer_state("node-3") == "dead"
     assert node.active_peers(["node-3", "node-4"]) == ["node-4"]
+
+
+# ================= discovery (task 2.4) =================
+def test_node_of_actor_reads_back_the_node_id() -> None:
+    assert node_of_actor(actor_name("node-3")) == NodeId("node-3")
+    assert node_of_actor("echo") is None  # some other actor
+    assert node_of_actor("service-node-Not Valid") is None
+
+
+def test_list_nodes_answers_the_registered_nodes_and_itself(
+    tmp_path: Path, clock: ManualClock
+) -> None:
+    registered = [NodeId("node-3"), NodeId("node-2")]  # this node not among them
+    node = ServiceNode(
+        "node-1",
+        str(tmp_path),
+        crypto=FakeCrypto(),
+        clock=clock,
+        node_lister=lambda: registered,
+    )
+    reply = node.list_nodes()
+    assert reply.ok and reply.value == ["node-1", "node-2", "node-3"]
+
+
+def test_list_nodes_leaves_out_peers_this_node_knows_are_dead(
+    tmp_path: Path, clock: ManualClock
+) -> None:
+    node = ServiceNode(
+        "node-1",
+        str(tmp_path),
+        crypto=FakeCrypto(),
+        clock=clock,
+        node_lister=lambda: [NodeId("node-1"), NodeId("node-2"), NodeId("node-3")],
+    )
+    node.report_peer("node-3", answered=False)
+    clock.advance(15_000)
+    assert node.list_nodes().value == ["node-1", "node-2"]
