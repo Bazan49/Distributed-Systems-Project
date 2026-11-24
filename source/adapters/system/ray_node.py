@@ -40,11 +40,13 @@ membership view), so do not raise the concurrency without adding locks.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import ray
+from ray.util import list_named_actors
 
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
@@ -75,6 +77,7 @@ from source.domain.records import DirectoryRecord, NodeReply, PutOutcome
 DEFAULT_MAX_RESTARTS = -1
 MAILBOX_DB = "mailbox.db"
 DIRECTORY_DB = "directory.db"
+ACTOR_PREFIX = "service-node-"
 
 
 def actor_name(node_id: str) -> str:
@@ -83,7 +86,37 @@ def actor_name(node_id: str) -> str:
     Lets anyone find it with ``ray.get_actor(actor_name(...))`` (the gateway
     of task 2.3), and the name survives restarts.
     """
-    return f"service-node-{NodeId(node_id).value}"
+    return f"{ACTOR_PREFIX}{NodeId(node_id).value}"
+
+
+def node_of_actor(name: str) -> NodeId | None:
+    """The node whose actor is called ``name``, or None if it is not a node actor."""
+    if not name.startswith(ACTOR_PREFIX):
+        return None
+    try:
+        return NodeId(name[len(ACTOR_PREFIX) :])
+    except ValueError:
+        return None
+
+
+def registered_nodes(namespace: str | None = None) -> list[NodeId]:
+    """Every service node whose actor is registered in Ray right now (discovery, task 2.4).
+
+    Ray keeps the name of an actor while it lives or is being restarted, and
+    drops it when the actor dies for good. So this is the list of nodes that
+    exist now, not the list of nodes that ever existed.
+
+    ``namespace``: where the node actors live. ``None`` = the namespace of the
+    current job. Careful: INSIDE an actor that is the namespace of the job that
+    created it, not the actor's own, which is why a node is told its namespace.
+    """
+    wanted = namespace if namespace is not None else ray.get_runtime_context().namespace
+    found = {
+        node_of_actor(entry["name"])
+        for entry in list_named_actors(all_namespaces=True)
+        if entry["namespace"] == wanted
+    }
+    return sorted(n for n in found if n is not None)
 
 
 @dataclass(frozen=True)
@@ -109,12 +142,18 @@ class ServiceNode:
         directory_policy: DirectoryPolicy | None = None,
         suspect_timeout_ms: int = DEFAULT_SUSPECT_TIMEOUT_MS,
         dead_timeout_ms: int = DEFAULT_DEAD_TIMEOUT_MS,
+        namespace: str | None = None,
+        node_lister: Callable[[], list[NodeId]] | None = None,
     ) -> None:
         """Open (or create) this node's databases under ``data_dir/node_id/``.
 
         ``crypto`` and ``clock`` default to the real ones (``NaClCrypto``,
         ``SystemClock``); tests may pass fakes. All arguments must be
         picklable: Ray stores them to run ``__init__`` again on a restart.
+
+        ``namespace`` is the Ray namespace of the node actors (for discovery).
+        ``node_lister`` replaces the Ray lookup of the registered nodes; it
+        exists for tests without Ray.
 
         Raises:
             ValueError: ``node_id`` is not a valid NodeId.
@@ -134,6 +173,11 @@ class ServiceNode:
             self._directory_store, crypto, clock, directory_policy
         )
         self._membership = MembershipService(clock, suspect_timeout_ms, dead_timeout_ms)
+        self._list_registered: Callable[[], list[NodeId]] = (
+            node_lister
+            if node_lister is not None
+            else lambda: registered_nodes(namespace)
+        )
 
     # ---- replies ----
     def _ok(self, value: Any = None) -> NodeReply[Any]:
@@ -235,6 +279,18 @@ class ServiceNode:
         nodes = [NodeId(c) for c in candidates]
         return [n.value for n in self._membership.get_active_nodes(nodes)]
 
+    # ---- discovery ----
+    def list_nodes(self) -> NodeReply[list[str]]:
+        """The service nodes available now, as node ids (task 2.4).
+
+        That is: every node actor registered in Ray, plus this node, minus the
+        peers this node's membership considers DEAD. Sorted. A new client asks
+        this to any initial node to learn the whole cluster.
+        """
+        others = [n for n in self._list_registered() if n != self._node]
+        available = self._membership.get_active_nodes(others)
+        return self._ok(sorted(n.value for n in {self._node, *available}))
+
     # ---- lifecycle ----
     def close(self) -> None:
         """Close both databases (a clean shutdown; a crash loses nothing either)."""
@@ -257,19 +313,24 @@ def start_service_node(
     data_dir: str | Path,
     *,
     max_restarts: int = DEFAULT_MAX_RESTARTS,
+    namespace: str | None = None,
     **node_options: Any,
 ) -> Any:
     """Create (or find, if it already exists) the actor of ``node_id``.
 
-    The actor is registered under ``actor_name(node_id)``. If an actor with
-    that name already exists, it is returned as is and ``node_options`` are
-    ignored. ``node_options`` are the keyword arguments of ``ServiceNode``.
+    The actor is registered under ``actor_name(node_id)`` in ``namespace``
+    (``None`` = the current job's namespace). If an actor with that name
+    already exists, it is returned as is and ``node_options`` are ignored.
+    ``node_options`` are the keyword arguments of ``ServiceNode``.
 
     Returns:
         The Ray actor handle (``ray.actor.ActorHandle``).
     """
+    if namespace is None:
+        namespace = ray.get_runtime_context().namespace
     return ServiceNodeActor.options(
         name=actor_name(node_id),
+        namespace=namespace,
         max_restarts=max_restarts,
         get_if_exists=True,
-    ).remote(node_id, str(data_dir), **node_options)
+    ).remote(node_id, str(data_dir), namespace=namespace, **node_options)

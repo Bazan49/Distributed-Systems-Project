@@ -67,6 +67,13 @@ T = TypeVar("T")
 Parser = Callable[[Any], T]
 
 
+DEFAULT_DISCOVERY_TIMEOUT_MS = 5_000
+
+
+class DiscoveryError(Exception):
+    """No initial node gave the list of nodes (all down, unknown or lying)."""
+
+
 class _InvalidAnswer(Exception):
     """The node's answer does not have the expected shape."""
 
@@ -106,6 +113,12 @@ def _true(value: Any) -> bool:
     return True
 
 
+def _node_list(value: Any) -> list[NodeId]:
+    if not isinstance(value, list) or not value:
+        raise _InvalidAnswer("expected a non-empty list of node ids")
+    return [NodeId(v) for v in value]  # ValueError if one is not a valid id
+
+
 def _record_or_none(value: Any) -> DirectoryRecord | None:
     if value is not None and not isinstance(value, DirectoryRecord):
         raise _InvalidAnswer("expected a DirectoryRecord or None")
@@ -129,9 +142,56 @@ class RayNodeGateway:
     def __init__(
         self, node_ids: Sequence[NodeId], namespace: str | None = None
     ) -> None:
-        self._nodes = list(dict.fromkeys(node_ids))
+        self._nodes = sorted(set(node_ids))
+        self._seeds: list[NodeId] = []  # initial nodes, asked first on a refresh
         self._namespace = namespace
         self._handles: dict[NodeId, Any] = {}  # cache of actor handles
+
+    # ---- discovery (task 2.4) ----
+    @classmethod
+    def from_seeds(
+        cls,
+        seeds: Sequence[NodeId],
+        namespace: str | None = None,
+        timeout_ms: int = DEFAULT_DISCOVERY_TIMEOUT_MS,
+    ) -> RayNodeGateway:
+        """A gateway that learns the cluster from its initial nodes ("seeds").
+
+        A new client only needs the names of a few initial nodes (from the
+        configuration). It asks ALL of them at once for the list of nodes and
+        keeps the FIRST valid answer: any single live seed is enough.
+
+        Raises:
+            DiscoveryError: no seed answered with a valid list in time.
+        """
+        gateway = cls(seeds, namespace)
+        gateway._seeds = list(dict.fromkeys(seeds))
+        replies = gateway._ask_for_nodes(timeout_ms)
+        if not any(r.ok for r in replies):
+            reasons = "; ".join(f"{r.node}: {r.error}" for r in replies)
+            raise DiscoveryError(f"no initial node gave the list of nodes ({reasons})")
+        return gateway
+
+    def refresh_nodes(self, timeout_ms: int = DEFAULT_DISCOVERY_TIMEOUT_MS) -> bool:
+        """Ask any known node for the current list and add the nodes not known yet.
+
+        Returns True if some node answered. Nodes are only ADDED, never removed:
+        the list of nodes decides placement (which nodes hold a user's data),
+        so it must be stable; a node that is down is skipped by membership
+        (DEAD), not by forgetting it. Call it periodically, like
+        ``QuorumClient.refresh_membership``.
+        """
+        return any(r.ok for r in self._ask_for_nodes(timeout_ms))
+
+    def _ask_for_nodes(self, timeout_ms: int) -> list[NodeReply[list[NodeId]]]:
+        """Ask the seeds and every known node at once; merge the first valid answer."""
+        candidates = list(dict.fromkeys([*self._seeds, *self._nodes]))
+        replies = self._call(candidates, "list_nodes", (), _node_list, timeout_ms, 1)
+        for reply in replies:
+            if reply.ok and reply.value is not None:
+                self._nodes = sorted({*self._nodes, *reply.value})
+                break
+        return replies
 
     # ---- finding the actors ----
     def _handle(self, node: NodeId) -> Any | None:
@@ -243,6 +303,7 @@ class RayNodeGateway:
 
     # ---- NodeGatewayPort ----
     def list_nodes(self) -> list[NodeId]:
+        """The nodes known so far (configured, or discovered with ``refresh_nodes``)."""
         return list(self._nodes)
 
     def ping(self, nodes: Sequence[NodeId], timeout_ms: int) -> list[NodeReply[None]]:
