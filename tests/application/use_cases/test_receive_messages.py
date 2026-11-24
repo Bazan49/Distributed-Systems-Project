@@ -232,7 +232,9 @@ def test_a_copy_of_a_buffered_message_is_a_duplicate(
     receive(service, ahead)
 
     assert receive(service, ahead).status is ReceiveStatus.DUPLICATE
-    assert store.load_inbound_stream(FROM_BOB, BOB.user_id).pending[0].seq == 2  # type: ignore[union-attr]
+    saved = store.load_inbound_stream(FROM_BOB, BOB.user_id)
+    assert saved is not None
+    assert saved.pending[0].seq == 2
 
 
 # ---------------- tampering ----------------
