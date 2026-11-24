@@ -5,104 +5,87 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "source"
 version = "0.1.0"
-description = "Mensajería segura descentralizada (P08)"
+description = "Decentralized secure messaging (P08)"
 requires-python = ">=3.10"
+# EXACT versions (==): local environments, pre-commit and the CI use the same ones.
+# To upgrade one: change the number here in a PR, check that the CI passes
+# and, after the merge, reinstall with `pip install -e ".[dev]"`.
 dependencies = [
-    "ray[default]>=2.9",
-    "pynacl>=1.5",
+    "ray[default]==2.59.0",
+    "pynacl==1.6.2",
 ]
 
 [project.optional-dependencies]
+# Development tools: not needed to run the application.
 dev = [
-    "ruff>=0.4",
-    "mypy>=1.10",
-    "import-linter>=2.0",
-    "pre-commit>=3.7",
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-    "hypothesis>=6.100",
+    "ruff==0.17.6",
+    "mypy==2.4.1",
+    "import-linter==2.15",
+    "pre-commit==4.6.2",
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "hypothesis==6.168.5",
 ]
 
 [tool.setuptools.packages.find]
 include = ["source*"]
 
+# ─── Ruff: linter and formatter ───────────────────────────────
 [tool.ruff]
-# Versión mínima de Python que soporta tu proyecto
-target-version = "py310"
-# Longitud de línea máxima (88 es compatible con black)
-line-length = 88
-# Directorios a excluir del análisis
-exclude = [".git", ".venv", "venv", "__pycache__", "build", "dist"]
+target-version = "py310"  # rules and syntax of Python 3.10, the minimum version
+line-length = 88          # line length applied by the formatter
 
 [tool.ruff.lint]
-# Conjuntos de reglas a activar
 select = [
-    "E",    # pycodestyle (errores de estilo)
-    "W",    # pycodestyle (advertencias de estilo)
-    "F",    # pyflakes (nombres no definidos, imports sin usar)
-    "I",    # isort (orden de imports)
-    "B",    # flake8-bugbear (errores comunes)
-    "C4",   # flake8-comprehensions
-    "UP",   # pyupgrade (sintaxis moderna de Python)
-    "SIM",  # flake8-simplify
-    "S",    # flake8-bandit (seguridad)
-    "RUF",  # Reglas específicas de Ruff
+    "E",    # pycodestyle: style errors
+    "W",    # pycodestyle: style warnings
+    "F",    # pyflakes: undefined names, unused imports and variables
+    "I",    # isort: import order
+    "B",    # flake8-bugbear: common bugs
+    "C4",   # flake8-comprehensions: unnecessary comprehensions
+    "UP",   # pyupgrade: modern Python syntax
+    "SIM",  # flake8-simplify: simplifications
+    "S",    # flake8-bandit: security
+    "RUF",  # Ruff-specific rules (including flagging an unused `noqa`)
 ]
-# Reglas a ignorar globalmente
 ignore = [
-    "E501",  # Línea demasiado larga (lo maneja el formateador)
-    "B008",  # Llamadas a funciones en argumentos por defecto
+    # Line length is decided by the formatter. Lines it cannot split
+    # (long strings, docstrings and comments) are not considered an error.
+    "E501",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Ignorar reglas específicas en tests
-"tests/**/*.py" = ["S101", "S105", "S106", "S311"]
+"tests/**/*.py" = [
+    "S101",  # `assert` is pytest's checking mechanism
+    "S105",  # hardcoded passwords: they are test data
+    "S311",  # `random` with a fixed seed, for deterministic tests (not cryptography)
+]
 
 [tool.ruff.format]
-# Estilo de comillas (doble comilla, compatible con black)
 quote-style = "double"
-# Estilo de indentación
 indent-style = "space"
 
+# ─── mypy: type checking ──────────────────────────────────────
 [tool.mypy]
 python_version = "3.10"
-# Activa el modo estricto: todas las comprobaciones de tipo posibles
+# `strict` turns on every optional check; among them,
+# warn_return_any, warn_unused_ignores and warn_redundant_casts.
 strict = true
-# Avisa si una función devuelve `Any` cuando se espera un tipo concreto
-warn_return_any = true
-# Avisa si un `# type: ignore` ya no es necesario
-warn_unused_ignores = true
-# Avisa sobre casts redundantes
-warn_redundant_casts = true
-# Muestra el código de error en los mensajes
-show_error_codes = true
-# Muestra el contexto del error
 show_error_context = true
 exclude = [".venv/", "venv/", "build/", "dist/"]
 
-# Ejemplo: Ignorar la falta de stubs de tipos en librerías de terceros
-[[tool.mypy.overrides]]
-module = ["ray.*", "nacl.*"]
-ignore_missing_imports = true
-
-# Los tests usan pytest como dependencia de desarrollo opcional. Si no está
-# instalado en el entorno que ejecuta `mypy .`, sus decoradores no deben
-# producir errores de tipado secundarios.
-[[tool.mypy.overrides]]
-module = ["pytest", "pytest.*"]
-ignore_missing_imports = true
-
+# Tests break the types ON PURPOSE, to check that the code rejects at run
+# time what static typing already forbids: arguments of the wrong type
+# (arg-type), and modifying immutable objects or calling with arguments
+# that are not allowed (misc).
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 disable_error_code = ["misc", "arg-type"]
 
-[[tool.mypy.overrides]]
-module = ["hypothesis", "hypothesis.*"]
-ignore_missing_imports = true
-
+# ─── import-linter: architecture rules ────────────────────────
 [tool.importlinter]
 root_package = "source"
-include_external_packages = true
+include_external_packages = true  # required to forbid external packages
 ignore_missing_imports = true
 
 [[tool.importlinter.contracts]]
@@ -118,24 +101,31 @@ layers = [
 name = "Domain must not import I/O libraries"
 type = "forbidden"
 source_modules = ["source.domain"]
-forbidden_modules = ["ray", "sqlite3", "nacl", "os"]
+forbidden_modules = ["ray", "sqlite3", "nacl", "os", "logging"]
 
-# ─── Pytest ────────────────────────────────────────────────────
+# ─── pytest ───────────────────────────────────────────────────
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
-    "integration: pruebas que requieren Ray (lentas)",
-    "contract: pruebas de contrato de puertos",
+    "integration: tests that need Ray (slow)",
+    "contract: port contract tests",
 ]
 
-# ─── Coverage ──────────────────────────────────────────────────
+# ─── Coverage ─────────────────────────────────────────────────
 [tool.coverage.run]
-source = ["source"]
-branch = true
-omit = ["source/application/ports/*", "source/domain/node_id.py", "source/domain/records.py"]
+source = ["source"]  # only the application code (not tests/ nor tools/)
+branch = true        # also measures both branches of every condition
 
 [tool.coverage.report]
 fail_under = 90
 show_missing = true
 skip_covered = true
+# Only code that, by design, does not run in the tests is excluded.
+# Files with logic are never excluded.
+exclude_also = [
+    'if __name__ == .__main__.:',  # program start-up; the tests call main()
+    'if TYPE_CHECKING:',           # block only read by mypy
+    'raise NotImplementedError',   # marker of pending or abstract code
+    'class .*\bProtocol\):',       # interfaces: no behaviour of their own
+]
