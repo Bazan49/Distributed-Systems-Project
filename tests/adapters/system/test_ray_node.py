@@ -1,0 +1,252 @@
+"""Tests of ServiceNode WITHOUT Ray: the logic of the node, in-process.
+
+The restart itself is tested with real Ray in ``ray/test_ray_node_actor.py``.
+Here a "restart" is what Ray does: build a NEW ServiceNode with the same
+arguments over the same folder.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from source.adapters.memory.clock import ManualClock
+from source.adapters.memory.crypto import FakeCrypto
+from source.adapters.system.ray_node import (
+    DIRECTORY_DB,
+    MAILBOX_DB,
+    ServiceNode,
+    actor_name,
+)
+from source.application.ports.errors import StoreError
+from source.application.use_cases.directory import DEFAULT_MAX_LEASE_MS
+from source.application.use_cases.mailbox import DEFAULT_TTL_MS
+from source.domain.envelope import Envelope
+from source.domain.records import PutOutcome
+from tests.contracts.mailbox_store_contract import make_envelope
+from tests.support.builders import (
+    ALICE,
+    BOB,
+    CARLA,
+    ack_request,
+    collect_request,
+    signed_record,
+)
+
+
+@pytest.fixture
+def clock() -> ManualClock:
+    return ManualClock()
+
+
+def make_node(
+    tmp_path: Path, clock: ManualClock, node_id: str = "node-1"
+) -> ServiceNode:
+    return ServiceNode(node_id, str(tmp_path), crypto=FakeCrypto(), clock=clock)
+
+
+@pytest.fixture
+def node(tmp_path: Path, clock: ManualClock) -> ServiceNode:
+    return make_node(tmp_path, clock)
+
+
+def bob_collects(node: ServiceNode, clock: ManualClock) -> list[Envelope]:
+    reply = node.collect(collect_request(BOB, clock.now_ms()).to_bytes())
+    assert reply.ok and reply.value is not None
+    return [Envelope.from_bytes(raw) for raw in reply.value]
+
+
+# ================= basics =================
+def test_the_node_keeps_its_databases_in_its_own_folder(tmp_path: Path) -> None:
+    node = make_node(tmp_path, ManualClock(), "node-7")
+    assert (tmp_path / "node-7" / MAILBOX_DB).exists()
+    assert (tmp_path / "node-7" / DIRECTORY_DB).exists()
+    info = node.info()
+    assert info.node_id.value == "node-7"
+    assert info.data_dir == str(tmp_path / "node-7")
+    assert info.pid > 0
+
+
+def test_an_invalid_node_id_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        ServiceNode("Not A Node", str(tmp_path))
+    with pytest.raises(ValueError):
+        actor_name("../etc")
+
+
+def test_the_actor_name_is_derived_from_the_node_id() -> None:
+    assert actor_name("node-1") == "service-node-node-1"
+
+
+def test_ping_answers_ok_with_the_node_id(node: ServiceNode) -> None:
+    reply = node.ping()
+    assert reply.ok and reply.node.value == "node-1"
+
+
+def test_by_default_it_uses_the_real_clock_and_crypto(tmp_path: Path) -> None:
+    node = ServiceNode("node-1", str(tmp_path))
+    assert node.ping().ok
+    node.close()
+
+
+# ================= mailbox =================
+def test_a_deposited_envelope_can_be_collected(
+    node: ServiceNode, clock: ManualClock
+) -> None:
+    envelope = make_envelope()
+    reply = node.deposit(envelope.to_bytes())
+    assert reply.ok and reply.value is PutOutcome.STORED
+    assert bob_collects(node, clock) == [envelope]
+
+
+def test_deposit_is_idempotent(node: ServiceNode) -> None:
+    raw = make_envelope().to_bytes()
+    node.deposit(raw)
+    assert node.deposit(raw).value is PutOutcome.ALREADY_PRESENT
+
+
+def test_a_malformed_envelope_is_refused(node: ServiceNode) -> None:
+    reply = node.deposit(b"not an envelope")
+    assert not reply.ok and reply.refused
+    assert reply.error is not None and "malformed envelope" in reply.error
+
+
+def test_acknowledge_deletes_the_envelopes(
+    node: ServiceNode, clock: ManualClock
+) -> None:
+    envelope = make_envelope()
+    node.deposit(envelope.to_bytes())
+    request = ack_request(BOB, clock.now_ms(), [envelope.message_id])
+    reply = node.acknowledge(request.to_bytes())
+    assert reply.ok and reply.value == 1
+    assert bob_collects(node, clock) == []
+
+
+@pytest.mark.parametrize("operation", ["collect", "acknowledge"])
+def test_malformed_mailbox_requests_are_refused(
+    node: ServiceNode, operation: str
+) -> None:
+    reply = getattr(node, operation)(b"{}")
+    assert not reply.ok and reply.refused
+    assert "malformed request" in reply.error
+
+
+def test_someone_else_cannot_collect_bobs_mailbox(
+    node: ServiceNode, clock: ManualClock
+) -> None:
+    node.deposit(make_envelope().to_bytes())
+    honest = collect_request(CARLA, clock.now_ms())
+    # Carla signs a request but claims to be Bob: the id no longer matches the key.
+    forged = honest.__class__(
+        action=honest.action,
+        receiver=BOB.user_id,
+        public_key=honest.public_key,
+        limit=honest.limit,
+        message_ids=honest.message_ids,
+        issued_at_ms=honest.issued_at_ms,
+        nonce=honest.nonce,
+        signature=honest.signature,
+    )
+    reply = node.collect(forged.to_bytes())
+    assert not reply.ok and reply.refused and reply.error == "bad_identity"
+
+
+def test_a_replayed_request_is_refused(node: ServiceNode, clock: ManualClock) -> None:
+    raw = collect_request(BOB, clock.now_ms()).to_bytes()
+    assert node.collect(raw).ok
+    replay = node.collect(raw)
+    assert replay.refused and replay.error == "replayed"
+    ack = ack_request(BOB, clock.now_ms(), [make_envelope().message_id]).to_bytes()
+    assert node.acknowledge(ack).ok
+    assert node.acknowledge(ack).error == "replayed"
+
+
+# ================= directory =================
+def test_a_published_record_can_be_resolved(
+    node: ServiceNode, clock: ManualClock
+) -> None:
+    record = signed_record(ALICE, clock.now_ms())
+    assert node.publish_record(record).value is True
+    reply = node.resolve_record(ALICE.user_id.value)
+    assert reply.ok and reply.value == record
+
+
+def test_an_unknown_user_resolves_to_no_record(node: ServiceNode) -> None:
+    reply = node.resolve_record(BOB.user_id.value)
+    assert reply.ok and reply.value is None
+
+
+def test_a_stale_record_is_refused_with_the_reason(
+    node: ServiceNode, clock: ManualClock
+) -> None:
+    node.publish_record(signed_record(ALICE, clock.now_ms(), version=2))
+    reply = node.publish_record(signed_record(ALICE, clock.now_ms(), version=1))
+    assert reply.refused and reply.error == "rejected_stale"
+
+
+def test_something_that_is_not_a_record_is_refused(node: ServiceNode) -> None:
+    reply = node.publish_record("not a record")
+    assert reply.refused and reply.error == "malformed record"
+
+
+def test_a_malformed_user_id_is_refused(node: ServiceNode) -> None:
+    reply = node.resolve_record("bob")
+    assert reply.refused and reply.error is not None
+    assert "malformed user id" in reply.error
+
+
+# ================= restart: the data survives =================
+def test_a_new_incarnation_over_the_same_folder_keeps_every_accepted_item(
+    tmp_path: Path, clock: ManualClock
+) -> None:
+    first = make_node(tmp_path, clock)
+    envelope = make_envelope()
+    record = signed_record(ALICE, clock.now_ms(), version=3)
+    first.deposit(envelope.to_bytes())
+    first.publish_record(record)
+    # No close(): Ray does not call it when the process dies.
+
+    second = make_node(tmp_path, clock)  # what Ray does on a restart
+
+    assert bob_collects(second, clock) == [envelope]
+    assert second.resolve_record(ALICE.user_id.value).value == record
+    stale = second.publish_record(signed_record(ALICE, clock.now_ms(), version=2))
+    assert stale.error == "rejected_stale"  # the highest version survived too
+
+
+def test_nodes_with_the_same_data_dir_do_not_share_data(
+    tmp_path: Path, clock: ManualClock
+) -> None:
+    one = make_node(tmp_path, clock, "node-1")
+    two = make_node(tmp_path, clock, "node-2")
+    one.deposit(make_envelope().to_bytes())
+    assert bob_collects(two, clock) == []
+
+
+# ================= maintenance =================
+def test_purge_removes_expired_envelopes_and_records(
+    node: ServiceNode, clock: ManualClock
+) -> None:
+    node.deposit(make_envelope().to_bytes())
+    node.publish_record(signed_record(ALICE, clock.now_ms()))
+    assert node.purge_expired() == (0, 0)
+    clock.advance(max(DEFAULT_TTL_MS, DEFAULT_MAX_LEASE_MS))
+    assert node.purge_expired() == (1, 1)
+
+
+def test_a_storage_failure_is_an_error_not_a_refusal(node: ServiceNode) -> None:
+    node.close()
+    with pytest.raises(StoreError):
+        node.deposit(make_envelope().to_bytes())
+
+
+# ================= membership of peers =================
+def test_the_node_tracks_its_peers(node: ServiceNode, clock: ManualClock) -> None:
+    assert node.peer_state("node-2") == "suspect"  # never heard of
+    node.report_peer("node-2", answered=True)
+    assert node.peer_state("node-2") == "alive"
+    node.report_peer("node-3", answered=False)
+    clock.advance(15_000)
+    assert node.peer_state("node-3") == "dead"
+    assert node.active_peers(["node-3", "node-4"]) == ["node-4"]
