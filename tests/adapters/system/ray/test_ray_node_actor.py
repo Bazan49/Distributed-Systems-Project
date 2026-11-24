@@ -72,6 +72,19 @@ def wait_for_new_process(handle: Any, old_pid: int) -> int:
     raise AssertionError("the actor did not come back")
 
 
+def wait_until_dead(handle: Any) -> None:
+    """Wait until calls to the actor fail (right after ``ray.kill`` a call may
+    still reach the old process)."""
+    deadline = time.monotonic() + RESTART_TIMEOUT_S
+    while time.monotonic() < deadline:
+        try:
+            call(handle, "ping")
+        except RayActorError:
+            return
+        time.sleep(0.05)
+    raise AssertionError("the actor did not die")
+
+
 def bob_collects(handle: Any) -> list[Envelope]:
     reply = call(handle, "collect", collect_request(BOB, now_ms()).to_bytes())
     assert reply.ok
@@ -125,7 +138,8 @@ def test_killed_without_restart_it_stays_dead_but_its_data_does_not(
     call(handle, "deposit", envelope.to_bytes())
 
     ray.kill(handle, no_restart=True)  # a deliberate shutdown
-    with pytest.raises(RayActorError):
+    wait_until_dead(handle)  # ray.kill is asynchronous
+    with pytest.raises(RayActorError):  # and it stays dead: no restart
         call(handle, "ping")
 
     again = start_service_node(node_id, tmp_path, crypto=FakeCrypto())
