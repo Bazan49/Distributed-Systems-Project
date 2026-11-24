@@ -222,11 +222,14 @@ __marimo__/
 # Import-linter
 .import_linter_cache/
 
-# Datos locales del proyecto (SQLite y pruebas)
+# Local project data (SQLite and tests)
 data/
 *.db
 *.sqlite
 *.sqlite3
 
 .hypothesis/
-docs/
+
+# Structured logs (JSON Lines)
+logs/
+*.jsonl
