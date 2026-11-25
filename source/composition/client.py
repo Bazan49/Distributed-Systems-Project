@@ -7,12 +7,10 @@ A client needs two kinds of things:
 * **The network it joins**: the service nodes (a ``NodeGatewayPort``) and the
   way to reach other clients directly (``peers_for``). That is a ``Network``.
 
-``Network`` is the extension point between deployments. Today it is
-implemented by ``DemoNetwork`` (every client and node in one process, in
-memory). In stage 2 a Ray implementation provides the same two members, and
-nothing else changes: not ``ClientApp``, not the CLI. That is what makes
-"one console per user" possible: each console is a process that builds its
-client over the shared Ray cluster.
+``Network`` is the extension point between deployments. ``RayNetwork``
+(``source/composition/ray_network.py``) implements it over a Ray cluster;
+another deployment only has to provide the same two members, and nothing
+else changes: not ``ClientApp``, not the interface.
 
 This package is the only place allowed to know every layer.
 """
@@ -71,7 +69,7 @@ class KdfStrength(str, Enum):
     """libsodium's moderate profile: about half a second and 256 MiB per login.
     What a real device should use: it makes guessing passwords expensive."""
     FAST = "fast"
-    """The minimum cost. Only for tests and quick demos, never for real data."""
+    """The minimum cost. Only for tests, never for real data."""
 
 
 @dataclass(frozen=True)

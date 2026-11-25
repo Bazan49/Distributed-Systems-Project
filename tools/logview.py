@@ -1,9 +1,9 @@
 """Read the JSON Lines logs as short, aligned lines; follow one message across processes.
 
-    # live, while the demo runs (in another terminal)
-    tail -f logs/demo.jsonl | python tools/logview.py
+    # live, while a client runs (in another terminal)
+    tail -f logs/client-alice.jsonl | python tools/logview.py
 
-    # every process merged in time order (demo, nodes, clients...)
+    # every process merged in time order (nodes and clients)
     python tools/logview.py logs/*.jsonl
 
     # the journey of one message through every process

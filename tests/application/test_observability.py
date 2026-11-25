@@ -30,7 +30,7 @@ def test_loggers_are_named_after_the_module_under_p08() -> None:
 def test_an_event_carries_its_name_and_fields(
     capture: pytest.LogCaptureFixture,
 ) -> None:
-    get_logger("demo_test").info(
+    get_logger("observability_test").info(
         "delivery.retry_scheduled", attempt=2, retry_in_ms=1500
     )
 
@@ -97,7 +97,7 @@ def test_the_call_context_applies_inside_the_block_only(
 
 
 def test_call_contexts_nest_and_restore(capture: pytest.LogCaptureFixture) -> None:
-    """In the demo, Bob handles a direct envelope inside Alice's call."""
+    """Bob handles a direct envelope inside Alice's call."""
     log = get_logger("x")
     with log_context(client="alice"):
         with log_context(client="bob", extra="y"):
