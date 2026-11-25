@@ -305,7 +305,7 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 |---|---|---|---|---|
 | `quorum.write` | DEBUG | `kind` (`deposit`/`publish`), `msg` (deposit) o `user` (publish), `asked`, `confirmed_by`, `outcome` (`accepted`) | `QuorumClient`, si hubo quórum | ✅ |
 | `quorum.write_failed` | WARNING | ídem, con `outcome` = `no_quorum` | `QuorumClient`, si no lo hubo (en lugar de `quorum.write`, nunca los dos) | ✅ |
-| `node.state_changed` | INFO / WARNING (si pasa a `dead`) | `node`, `from_state`, `to_state` | `MembershipService` | ⏳ |
+| `node.state_changed` | INFO / WARNING (si pasa a `dead`) | `node`, `from_state`, `to_state` (`alive`/`suspect`/`dead`) | `MembershipService`, cuando nota el cambio (un nodo nunca contactado cuenta como `suspect`) | ✅ |
 | `presence.published` / `presence.renew_failed` | DEBUG / WARNING | `version`, `expires_in_ms` | `DirectoryClient` | ⏳ |
 | `record.accepted` / `record.rejected` | DEBUG / WARNING | `user`, `version`, `reason` | `DirectoryService` (nodo) | ⏳ |
 | `mailbox.deposited` | DEBUG | `msg`, `outcome` (`stored`/`already_present`) | `MailboxService` (nodo) | ⏳ |

@@ -1,11 +1,15 @@
 """Tests for the MembershipService (task 1B.2), with a manual clock."""
 
+import logging
+
 import pytest
 
 from source.adapters.memory.clock import ManualClock
+from source.application.observability import FIELDS_ATTR
 from source.application.use_cases.membership import MembershipService
 from source.domain.membership import NodeState
 from source.domain.node_id import NodeId
+from tests.support.logs import events, has_event
 
 NODE = NodeId("node-1")
 
@@ -74,3 +78,82 @@ def test_prune_dead_removes_nodes(
     clock.advance(400)
     assert membership.prune_dead() == 1
     assert membership.prune_dead() == 0
+
+
+# ================= logs: node.state_changed (docs/logging.md) =================
+def changes(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str]]:
+    return [
+        (NodeState(f["from_state"]).value, NodeState(f["to_state"]).value)
+        for name, f in events(caplog)
+        if name == "node.state_changed"
+    ]
+
+
+def test_every_change_of_state_is_logged_once(
+    membership: MembershipService, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    membership.report_success(NODE)
+    membership.report_success(NODE)  # still alive: nothing new
+    clock.advance(150)
+    membership.get_state(NODE)
+    clock.advance(200)
+    membership.get_active_nodes([NODE])
+    membership.get_state(NODE)  # still dead: nothing new
+    membership.report_success(NODE)  # it comes back
+
+    assert changes(caplog) == [
+        ("suspect", "alive"),  # never contacted -> answered
+        ("alive", "suspect"),
+        ("suspect", "dead"),
+        ("dead", "alive"),
+    ]
+    assert has_event(
+        caplog,
+        "node.state_changed",
+        node=NODE,
+        from_state=NodeState.DEAD,
+        to_state=NodeState.ALIVE,
+    )
+
+
+def test_becoming_dead_is_a_warning_the_rest_is_info(
+    membership: MembershipService, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    membership.report_success(NODE)
+    membership.report_failure(NODE)
+    clock.advance(300)
+    membership.get_state(NODE)
+    levels = {
+        getattr(r, FIELDS_ATTR)["to_state"]: r.levelno
+        for r in caplog.records
+        if r.getMessage() == "node.state_changed"
+    }
+    assert levels == {
+        NodeState.ALIVE: logging.INFO,
+        NodeState.SUSPECT: logging.INFO,
+        NodeState.DEAD: logging.WARNING,
+    }
+
+
+def test_querying_a_node_never_contacted_logs_nothing(
+    membership: MembershipService, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    membership.get_state(NODE)
+    membership.get_active_nodes([NodeId("node-2")])
+    assert changes(caplog) == []
+
+
+def test_a_pruned_node_is_forgotten_without_a_false_change(
+    membership: MembershipService, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    membership.report_failure(NODE)
+    clock.advance(300)
+    membership.get_state(NODE)  # dead
+    caplog.set_level(logging.DEBUG, logger="p08")
+    caplog.clear()  # only what happens from here on
+    assert membership.prune_dead() == 1
+    membership.get_state(NODE)  # never contacted again: suspect, not a change
+    assert changes(caplog) == []
