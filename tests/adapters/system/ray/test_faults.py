@@ -4,7 +4,7 @@ Acceptance criterion: functions the integration tests can call. These tests
 use them exactly the way later integration tests will.
 
 The launched nodes use the REAL crypto (NaCl), so Bob has real keys here.
-The clients are the fake client actor
+The clients are the real client actor, started by the launcher.
 """
 
 from __future__ import annotations
@@ -21,8 +21,10 @@ import ray
 from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
+from source.adapters.system.ray.ray_peer_transport import inbox_name
 from source.adapters.system.ray_gateway import RayNodeGateway
 from source.adapters.system.ray_node import registered_nodes
+from source.application.use_cases.client_app import Profile
 from source.application.use_cases.membership import MembershipService
 from source.application.use_cases.quorum import QuorumClient
 from source.composition.faults import (
@@ -45,9 +47,17 @@ from source.domain.envelope import Envelope
 from source.domain.identifiers import UserId
 from source.domain.mailbox_access import MailboxAction, MailboxRequest
 from source.domain.node_id import NodeId
+from source.domain.outgoing_status import OutgoingStatus
 from source.domain.records import KeyPair
 from tests.contracts.mailbox_store_contract import make_envelope
-from tests.support.fake_client import events_of, start_fake_client
+from tests.support.client_actors import (
+    PASSWORD,
+    befriend,
+    call,
+    client_options,
+    received,
+    wait_for,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("ray_cluster")]
 
@@ -64,11 +74,14 @@ def cluster(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[RunningC
             "namespace": namespace,
             "data_dir": "state",
             "nodes": NODES,
-            "clients": [{"id": "alice"}, {"id": "bob"}],
+            "clients": [
+                {"id": c, "options": client_options(tmp_path / "logs")}
+                for c in ("alice", "bob")
+            ],
         },
         tmp_path,
     )
-    running = launch(config, client_factory=start_fake_client)
+    running = launch(config)
     yield running
     running.stop()
 
@@ -237,31 +250,49 @@ def test_the_quorum_survives_one_node_down_but_not_two(
 def test_a_disconnected_client_is_gone_and_comes_back_over_its_data(
     cluster: RunningCluster,
 ) -> None:
-    folder = cluster.config.client_dir("bob")
+    bob: Profile = call(cluster.clients["bob"], "register", "Bob", PASSWORD)
 
     disconnect_client(cluster, "bob")
     assert not actor_exists(cluster, client_actor_name("bob"))
+    wait_for(  # Ray removes the inbox with its owner, a moment later
+        lambda: actor_exists(cluster, inbox_name(bob.user_id)),
+        lambda alive: not alive,
+        "Bob's inbox is gone: nobody can reach him directly",
+    )
     assert actor_exists(cluster, client_actor_name("alice"))  # the others stay
 
     reconnect_client(cluster, "bob")
-    assert actor_exists(cluster, client_actor_name("bob"))
-    assert events_of(folder) == ["connect", "connect"]  # same folder, no clean close
+    again = cluster.clients["bob"]
+    assert call(again, "logged_in") is False  # back, but logged out
+    assert call(again, "login", PASSWORD).user_id == bob.user_id  # same store
 
 
-def test_a_graceful_disconnect_lets_the_client_close_first(
+@pytest.mark.parametrize("graceful", [False, True])
+def test_a_client_keeps_its_identity_after_any_disconnect(
+    cluster: RunningCluster, graceful: bool
+) -> None:
+    alice: Profile = call(cluster.clients["alice"], "register", "Alice", PASSWORD)
+    disconnect_client(cluster, "alice", graceful=graceful)
+    reconnect_client(cluster, "alice")
+    assert call(cluster.clients["alice"], "login", PASSWORD) == alice
+
+
+def test_an_offline_client_gets_its_message_from_the_mailboxes_on_login(
     cluster: RunningCluster,
 ) -> None:
-    disconnect_client(cluster, "alice", graceful=True)
-    assert events_of(cluster.config.client_dir("alice")) == ["connect", "close"]
+    a, b = befriend(cluster.clients["alice"], cluster.clients["bob"])
 
+    with client_offline(cluster, "bob"):
+        sent = call(cluster.clients["alice"], "send", b.user_id, "te espero")
+        assert sent.status is OutgoingStatus.ACCEPTED  # in the mailboxes
 
-def test_the_reconnected_client_gets_the_same_arguments(
-    cluster: RunningCluster,
-) -> None:
-    before = ray.get(cluster.clients["bob"].describe.remote())
-    disconnect_client(cluster, "bob")
-    reconnect_client(cluster, "bob")
-    assert ray.get(cluster.clients["bob"].describe.remote()) == before
+    bob = cluster.clients["bob"]
+    call(bob, "login", PASSWORD)  # its first tick collects the mailbox
+    wait_for(
+        lambda: received(call(bob, "history", a.user_id)),
+        lambda texts: texts == ["te espero"],
+        "Bob collects the message on logging in",
+    )
 
 
 def test_client_offline_reconnects_after_the_block(cluster: RunningCluster) -> None:

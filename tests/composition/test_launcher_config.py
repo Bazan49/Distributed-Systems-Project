@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from source.adapters.system.ray.ray_client import device_actor_name
 from source.composition.launcher import (
     DEFAULT_CLIENT_FACTORY,
     DEFAULT_NAMESPACE,
@@ -18,6 +19,7 @@ from source.composition.launcher import (
     main,
     parse_config,
     resolve_factory,
+    start_ray_device,
 )
 from source.domain.node_id import NodeId
 
@@ -48,7 +50,7 @@ def test_a_full_configuration_is_read_as_written() -> None:
             namespace="demo",
             data_dir="/var/lib/msg",
             seeds=["node-2"],
-            clients=[{"id": "alice"}, {"id": "bob", "options": {"alias": "Bob"}}],
+            clients=[{"id": "alice"}, {"id": "bob", "options": {"kdf": "fast"}}],
             client_factory="pkg.mod:make",
             ray_address="ray://head:10001",
         ),
@@ -56,7 +58,7 @@ def test_a_full_configuration_is_read_as_written() -> None:
     )
     assert cfg.seeds == (NodeId("node-2"),)
     assert [c.client_id for c in cfg.clients] == ["alice", "bob"]
-    assert cfg.clients[1].options == {"alias": "Bob"}
+    assert cfg.clients[1].options == {"kdf": "fast"}
     assert cfg.data_dir == Path("/var/lib/msg")  # absolute: kept
     assert cfg.node_dir() == Path("/var/lib/msg/nodes")
     assert cfg.client_dir("bob") == Path("/var/lib/msg/clients/bob")
@@ -76,6 +78,7 @@ def test_a_full_configuration_is_read_as_written() -> None:
         (config(seeds=[]), "subset"),
         (config(clients={"id": "a"}), "clients must be a list"),
         (config(clients=[{"id": "Alice"}]), "client id"),
+        (config(clients=[{"id": "a" * 33}]), "client id"),  # not a device name
         (config(clients=[{"id": "a", "extra": 1}]), "each client"),
         (config(clients=[{"id": "a", "options": []}]), "options"),
         (config(clients=[{"id": "a"}, {"id": "a"}]), "repeated"),
@@ -114,15 +117,39 @@ def test_the_example_configuration_of_the_repository_is_valid() -> None:
 
 
 def test_resolve_factory_finds_a_function_or_explains_why_not() -> None:
-    assert callable(resolve_factory("tests.support.fake_client:start_fake_client"))
-    with pytest.raises(LaunchError, match=r"task 2\.5"):
+    assert resolve_factory("source.composition.launcher:start_ray_device") is (
+        start_ray_device
+    )
+    with pytest.raises(LaunchError, match="cannot import the client factory"):
         resolve_factory("source.adapters.system.no_such_module:start")
     with pytest.raises(LaunchError, match="not a function"):
         resolve_factory("source.composition.launcher:DEFAULT_NAMESPACE")
 
 
-def test_client_actors_are_named_cliente_id() -> None:
-    assert client_actor_name("alice") == "cliente-alice"
+def test_client_actors_have_the_name_of_the_real_client_actor() -> None:
+    assert client_actor_name("alice") == device_actor_name("alice")
+    assert client_actor_name("alice") == "client-device-alice"
+
+
+def test_the_default_factory_is_the_real_client_actor() -> None:
+    assert resolve_factory(DEFAULT_CLIENT_FACTORY) is start_ray_device
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"alias": "Bob"}, "unknown options"),
+        ({"kdf": "slow"}, "kdf"),
+        ({"tick_interval_ms": 0}, "tick_interval_ms"),
+        ({"tick_interval_ms": True}, "tick_interval_ms"),
+        ({"log_dir": ""}, "log_dir"),
+    ],
+)
+def test_the_default_factory_rejects_bad_options_before_starting_anything(
+    options: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(LaunchError, match=message):
+        start_ray_device("bob", "state", seeds=["node-1"], namespace="ns", **options)
 
 
 def test_the_command_fails_cleanly_on_a_bad_configuration(

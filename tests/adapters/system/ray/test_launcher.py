@@ -1,9 +1,9 @@
-"""The launcher with real Ray (task 2.7).
+"""The launcher with real Ray.
 
 Acceptance criterion: one command starts 3 nodes and 2 clients.
 
-The client actor (task 2.5) does not exist yet: the clients are played by
-``tests.support.fake_client``, which follows the agreed factory signature.
+Nothing is fake: the clients are the real client actor (``start_ray_device``,
+the default factory) with PyNaCl, SQLite and their own tick loops.
 """
 
 from __future__ import annotations
@@ -24,9 +24,11 @@ import ray
 
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
+from source.adapters.system.ray.ray_peer_transport import inbox_name
 from source.adapters.system.ray_gateway import RayNodeGateway
 from source.adapters.system.ray_node import MAILBOX_DB, registered_nodes
 from source.composition.launcher import (
+    DEFAULT_CLIENT_FACTORY,
     LaunchConfig,
     LaunchError,
     RunningCluster,
@@ -37,13 +39,19 @@ from source.composition.launcher import (
 from source.domain.identifiers import UserId
 from source.domain.mailbox_access import MailboxAction, MailboxRequest
 from source.domain.node_id import NodeId
+from source.domain.outgoing_status import OutgoingStatus
 from tests.contracts.mailbox_store_contract import make_envelope
-from tests.support.fake_client import broken_factory, start_fake_client
+from tests.support.client_actors import (
+    PASSWORD,
+    befriend,
+    call,
+    client_options,
+    received,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("ray_cluster")]
 
 REPO = Path(__file__).parents[4]
-FAKE_FACTORY = "tests.support.fake_client:start_fake_client"
 NODES = ["node-1", "node-2", "node-3"]
 WAIT_S = 60
 
@@ -55,13 +63,16 @@ def namespace(request: pytest.FixtureRequest) -> str:
 
 
 def make_config(tmp_path: Path, namespace: str, **overrides: Any) -> LaunchConfig:
+    options = client_options(tmp_path / "logs")
     raw: dict[str, Any] = {
         "namespace": namespace,
         "data_dir": "state",
         "nodes": NODES,
         "seeds": ["node-1"],
-        "clients": [{"id": "alice"}, {"id": "bob", "options": {"alias": "Bob"}}],
-        "client_factory": FAKE_FACTORY,
+        "clients": [
+            {"id": "alice", "options": options},
+            {"id": "bob", "options": options},
+        ],
     }
     raw.update(overrides)
     return parse_config(raw, tmp_path)
@@ -69,7 +80,7 @@ def make_config(tmp_path: Path, namespace: str, **overrides: Any) -> LaunchConfi
 
 @pytest.fixture
 def running(tmp_path: Path, namespace: str) -> Iterator[RunningCluster]:
-    cluster = launch(make_config(tmp_path, namespace), client_factory=start_fake_client)
+    cluster = launch(make_config(tmp_path, namespace))
     yield cluster
     cluster.stop()
 
@@ -101,14 +112,33 @@ def test_it_starts_every_node_and_every_client(running: RunningCluster) -> None:
         assert actor_exists(client_actor_name(client_id), ns)
 
 
-def test_each_client_gets_its_folder_the_seeds_and_its_options(
+def test_the_clients_are_the_real_client_actor_and_start_logged_out(
     running: RunningCluster,
 ) -> None:
-    bob = ray.get(running.clients["bob"].describe.remote(), timeout=WAIT_S)
-    assert bob["seeds"] == ["node-1"]
-    assert bob["options"] == {"alias": "Bob"}
-    assert bob["data_dir"] == str(running.config.client_dir("bob"))
-    assert Path(bob["data_dir"]).is_dir()
+    assert running.config.client_factory == DEFAULT_CLIENT_FACTORY
+    for client in running.clients.values():
+        assert call(client, "is_registered") is False
+        assert call(client, "logged_in") is False
+
+
+def test_each_client_keeps_its_store_in_its_folder(running: RunningCluster) -> None:
+    for client_id in ("alice", "bob"):
+        store = running.config.client_dir(client_id) / f"{client_id}.db"
+        assert store.exists()
+
+
+def test_launched_clients_reach_the_nodes_and_each_other(
+    running: RunningCluster,
+) -> None:
+    alice, bob = running.clients["alice"], running.clients["bob"]
+    # befriend publishes both records and sends the contact request through
+    # the nodes: the clients found them from the seed of the configuration.
+    a, b = befriend(alice, bob)
+
+    sent = call(alice, "send", b.user_id, "hola, Bob")
+
+    assert sent.status is OutgoingStatus.DELIVERED  # straight to Bob's actor
+    assert received(call(bob, "history", a.user_id)) == ["hola, Bob"]
 
 
 def test_each_node_keeps_its_files_in_its_folder(running: RunningCluster) -> None:
@@ -131,10 +161,23 @@ def test_stop_removes_every_actor_and_can_be_repeated(
     running.stop()
     running.stop()  # nothing left to stop: no error
     wait_until(lambda: registered_nodes(ns) == [], "the nodes are gone")
-    wait_until(
-        lambda: not actor_exists(client_actor_name("alice"), ns), "alice is gone"
-    )
+    for client_id in ("alice", "bob"):
+        wait_until(
+            lambda cid=client_id: not actor_exists(client_actor_name(cid), ns),
+            f"{client_id} is gone",
+        )
     assert running.nodes == {} and running.clients == {}
+
+
+def test_stop_closes_the_clients_first(running: RunningCluster) -> None:
+    ns = running.config.namespace
+    bob = running.clients["bob"]
+    b = call(bob, "register", "Bob", PASSWORD)
+    assert actor_exists(inbox_name(b.user_id), ns)  # Bob is listening
+
+    running.stop()
+
+    wait_until(lambda: not actor_exists(inbox_name(b.user_id), ns), "the inbox is gone")
 
 
 def test_launching_again_picks_up_the_data(tmp_path: Path, namespace: str) -> None:
@@ -173,19 +216,31 @@ def test_launching_again_picks_up_the_data(tmp_path: Path, namespace: str) -> No
 def test_if_a_client_fails_to_start_everything_is_stopped(
     tmp_path: Path, namespace: str
 ) -> None:
-    config = make_config(tmp_path, namespace)
-    with pytest.raises(RuntimeError, match="cannot start alice"):
-        launch(config, client_factory=broken_factory)
+    # Alice starts; Bob cannot (a wrong option): Alice and the nodes go too.
+    config = make_config(
+        tmp_path,
+        namespace,
+        clients=[
+            {"id": "alice", "options": client_options(tmp_path / "logs")},
+            {"id": "bob", "options": {"kdf": "slow"}},
+        ],
+    )
+    with pytest.raises(LaunchError, match="kdf of client bob"):
+        launch(config)
     wait_until(lambda: registered_nodes(namespace) == [], "the nodes are stopped")
+    wait_until(
+        lambda: not actor_exists(client_actor_name("alice"), namespace),
+        "alice is stopped",
+    )
 
 
-def test_without_the_client_actor_of_task_2_5_it_says_so_and_starts_nothing(
+def test_a_client_factory_that_does_not_exist_is_reported_and_starts_nothing(
     tmp_path: Path, namespace: str
 ) -> None:
     config = make_config(
-        tmp_path, namespace, client_factory="source.adapters.system.ray_client:start"
+        tmp_path, namespace, client_factory="source.adapters.system.no_such:start"
     )
-    with pytest.raises(LaunchError, match=r"task 2\.5"):
+    with pytest.raises(LaunchError, match="cannot import the client factory"):
         launch(config)
     assert registered_nodes(namespace) == []
 
@@ -231,8 +286,10 @@ def test_one_command_starts_3_nodes_and_2_clients_and_stops_them(
                 "namespace": namespace,
                 "data_dir": "state",
                 "nodes": NODES,
-                "clients": [{"id": "alice"}, {"id": "bob"}],
-                "client_factory": FAKE_FACTORY,
+                "clients": [
+                    {"id": c, "options": client_options(tmp_path / "logs")}
+                    for c in ("alice", "bob")
+                ],
             }
         ),
         encoding="utf-8",
@@ -249,11 +306,11 @@ def test_one_command_starts_3_nodes_and_2_clients_and_stops_them(
     try:
         ready = _read_line_until(proc, "READY")
         assert "nodes=[node-1, node-2, node-3]" in ready
-        assert "clients=[cliente-alice, cliente-bob]" in ready
+        assert "clients=[client-device-alice, client-device-bob]" in ready
         for node in NODES:
             assert (tmp_path / "state" / "nodes" / node / MAILBOX_DB).exists()
         for client in ("alice", "bob"):
-            assert (tmp_path / "state" / "clients" / client).is_dir()
+            assert (tmp_path / "state" / "clients" / client / f"{client}.db").exists()
 
         proc.send_signal(signal.SIGINT)  # Ctrl+C
 
