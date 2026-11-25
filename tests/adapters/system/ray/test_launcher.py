@@ -25,8 +25,8 @@ import ray
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
 from source.adapters.system.ray.ray_peer_transport import inbox_name
-from source.adapters.system.ray_gateway import RayNodeGateway
-from source.adapters.system.ray_node import MAILBOX_DB, registered_nodes
+from source.adapters.system.ray.ray_gateway import RayNodeGateway
+from source.adapters.system.ray.ray_node import MAILBOX_DB, registered_nodes
 from source.composition.launcher import (
     DEFAULT_CLIENT_FACTORY,
     LaunchConfig,

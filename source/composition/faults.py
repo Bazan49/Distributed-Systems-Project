@@ -38,7 +38,7 @@ from typing import Any
 import ray
 from ray.exceptions import RayActorError
 
-from source.adapters.system.ray_node import actor_name
+from source.adapters.system.ray.ray_node import actor_name
 from source.composition.launcher import (
     RunningCluster,
     client_actor_name,

@@ -22,7 +22,7 @@ from ray.exceptions import GetTimeoutError, RayActorError
 
 from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.system.clock import SystemClock
-from source.adapters.system.ray_node import actor_name, start_service_node
+from source.adapters.system.ray.ray_node import actor_name, start_service_node
 from source.composition.logging_setup import LogSetup
 from source.domain.envelope import Envelope
 from source.domain.records import PutOutcome

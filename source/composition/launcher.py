@@ -103,7 +103,7 @@ from source.adapters.system.ray.ray_client import (
     DEVICE_ACTOR_PREFIX,
     device_actor_name,
 )
-from source.adapters.system.ray_node import node_resource, start_service_node
+from source.adapters.system.ray.ray_node import node_resource, start_service_node
 from source.composition.client import ClientSettings, KdfStrength
 from source.composition.logging_setup import (
     DEFAULT_LOG_DIR,

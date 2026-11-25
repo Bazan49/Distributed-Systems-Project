@@ -22,8 +22,8 @@ from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
 from source.adapters.system.ray.ray_peer_transport import inbox_name
-from source.adapters.system.ray_gateway import RayNodeGateway
-from source.adapters.system.ray_node import registered_nodes
+from source.adapters.system.ray.ray_gateway import RayNodeGateway
+from source.adapters.system.ray.ray_node import registered_nodes
 from source.application.use_cases.client_app import Profile
 from source.application.use_cases.membership import MembershipService
 from source.application.use_cases.quorum import QuorumClient

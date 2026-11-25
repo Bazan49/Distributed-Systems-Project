@@ -21,7 +21,7 @@ import ray
 
 from source.adapters.system.ray.ray_client import device_actor_name
 from source.adapters.system.ray.ray_peer_transport import inbox_name
-from source.adapters.system.ray_node import start_service_node
+from source.adapters.system.ray.ray_node import start_service_node
 from source.application.use_cases.client_app import EntryKind, HistoryEntry, Profile
 from source.composition.client import ClientSettings, KdfStrength
 from source.composition.ray_network import RayClientFactory, start_ray_client

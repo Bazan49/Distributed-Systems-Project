@@ -14,7 +14,7 @@ import pytest
 
 from source.adapters.memory.clock import ManualClock
 from source.adapters.memory.crypto import FakeCrypto
-from source.adapters.system.ray_node import (
+from source.adapters.system.ray.ray_node import (
     DIRECTORY_DB,
     MAILBOX_DB,
     ServiceNode,

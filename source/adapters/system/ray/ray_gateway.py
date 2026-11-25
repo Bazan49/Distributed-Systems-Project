@@ -59,7 +59,7 @@ from typing import Any, TypeVar
 import ray
 from ray.exceptions import RayActorError, RayError
 
-from source.adapters.system.ray_node import actor_name
+from source.adapters.system.ray.ray_node import actor_name
 from source.application.observability import get_logger
 from source.domain.canonical import FormatError, is_int
 from source.domain.envelope import Envelope
