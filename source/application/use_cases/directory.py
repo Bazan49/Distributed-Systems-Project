@@ -13,6 +13,11 @@
 ``check_record_authenticity`` is also meant for the CLIENT: a node is not
 trusted, so whoever resolves a record should check it again.
 
+Logs (see ``docs/logging.md``), once per publication, where it is decided:
+``record.accepted`` (DEBUG: every presence renewal) with ``outcome`` STORED
+or UNCHANGED, or ``record.rejected`` (WARNING) with the ``reason``. Both carry
+``user`` and ``version`` when the record has them with the right type.
+
 Depends only on ports and the domain: no Ray, no SQLite.
 """
 
@@ -21,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.directory_store import DirectoryStorePort
@@ -34,6 +40,8 @@ from source.domain.directory import (
 )
 from source.domain.identifiers import UserId
 from source.domain.records import DirectoryRecord
+
+log = get_logger(__name__)
 
 DEFAULT_MAX_LEASE_MS = (
     10 * 60 * 1000
@@ -119,6 +127,22 @@ class DirectoryService:
         Order of checks: shape, lease, identity, signature, version. A rejected
         record never changes anything.
         """
+        outcome = self._decide(record)
+        # A malformed record may carry anything: log only well-typed fields
+        # (a raw string would bypass the formatter, which shortens UserIds).
+        known: dict[str, object] = {}
+        if isinstance(getattr(record, "user_id", None), UserId):
+            known["user"] = record.user_id
+        if is_int(getattr(record, "version", None)):
+            known["version"] = record.version
+        if outcome.accepted:
+            log.debug("record.accepted", **known, outcome=outcome)
+        else:
+            log.warning("record.rejected", **known, reason=outcome)
+        return outcome
+
+    def _decide(self, record: DirectoryRecord) -> PublishOutcome:
+        """The outcome of ``publish``; stores the record if it is acceptable."""
         try:
             validate_shape(record)
         except DirectoryRecordError:

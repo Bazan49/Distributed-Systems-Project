@@ -1,6 +1,7 @@
 """Tests for the directory service (task 1B.5), on in-memory adapters, a fake crypto
 and a manual clock."""
 
+import logging
 from dataclasses import replace
 from typing import Any
 
@@ -22,6 +23,7 @@ from source.application.use_cases.directory import (
 from source.domain.directory import build_record
 from source.domain.identifiers import UserId
 from source.domain.records import DirectoryRecord, KeyPair
+from tests.support.logs import events, has_event
 
 MINUTE = 60_000
 crypto = FakeCrypto()
@@ -363,3 +365,50 @@ def test_whatever_the_arrival_order_the_highest_version_wins(
         service.publish(record_for(ALICE_KEYS, clock, version=version))
     resolved = service.resolve(ALICE)
     assert resolved is not None and resolved.version == max(versions)
+
+
+# ------- logs: record.accepted / record.rejected (docs/logging.md) -------
+def test_an_accepted_record_is_logged_at_debug(
+    service: DirectoryService, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    record = record_for(ALICE_KEYS, clock, version=7)
+    service.publish(record)
+    service.publish(record)  # the same record again: unchanged
+    assert [(n, f["outcome"]) for n, f in events(caplog)] == [
+        ("record.accepted", PublishOutcome.STORED),
+        ("record.accepted", PublishOutcome.UNCHANGED),
+    ]
+    assert has_event(caplog, "record.accepted", user=ALICE, version=7)
+    assert {r.levelno for r in caplog.records} == {logging.DEBUG}
+
+
+def test_a_rejected_record_is_a_warning_with_the_reason(
+    service: DirectoryService, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    forged = tweak(record_for(ALICE_KEYS, clock, version=3), version=4)  # bad signature
+    assert service.publish(forged) is PublishOutcome.REJECTED_INVALID_SIGNATURE
+    assert events(caplog) == [
+        (
+            "record.rejected",
+            {
+                "user": ALICE,
+                "version": 4,
+                "reason": PublishOutcome.REJECTED_INVALID_SIGNATURE,
+            },
+        )
+    ]
+    assert caplog.records[0].levelno == logging.WARNING
+
+
+def test_a_malformed_record_logs_no_raw_field(
+    service: DirectoryService, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    raw_id = ALICE.value  # a plain string: the formatter would not shorten it
+    broken = tweak(record_for(ALICE_KEYS, clock), user_id=raw_id, version="1")
+    assert service.publish(broken) is PublishOutcome.REJECTED_MALFORMED
+    assert events(caplog) == [
+        ("record.rejected", {"reason": PublishOutcome.REJECTED_MALFORMED})
+    ]
