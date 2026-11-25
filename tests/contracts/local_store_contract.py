@@ -603,6 +603,65 @@ class LocalStoreContract:
         store.save_incoming_message(make_received(sender=BOB, seq=9))
         assert store.last_outgoing_seq(WITH_BOB) == 0
 
+    # ------------------------------------------------------- max lamport
+
+    def test_max_lamport_is_zero_for_a_new_conversation(
+        self, store: LocalStorePort
+    ) -> None:
+        """With nothing known yet, the first message gets timestamp 1."""
+        assert store.max_lamport(WITH_BOB) == 0
+
+    def test_max_lamport_counts_sent_messages_of_every_kind(
+        self, store: LocalStorePort
+    ) -> None:
+        """Contact messages are events too: they order what follows them."""
+        store.enqueue_outgoing(make_outgoing(seq=1, lamport=3))
+        store.enqueue_outgoing(
+            make_outgoing(seq=2, lamport=8, kind=MessageKind.CONTACT_ACCEPT)
+        )
+        assert store.max_lamport(WITH_BOB) == 8
+
+    def test_max_lamport_counts_received_messages(self, store: LocalStorePort) -> None:
+        """What arrived counts as much as what was sent: the max of both."""
+        store.enqueue_outgoing(make_outgoing(seq=1, lamport=4))
+        store.save_incoming_message(make_received(seq=1, lamport=11))
+        assert store.max_lamport(WITH_BOB) == 11
+
+    def test_max_lamport_counts_messages_released_by_commit_inbound(
+        self, store: LocalStorePort
+    ) -> None:
+        """Messages that reach the history through ordering count as well."""
+        message = make_received(seq=1, lamport=6)
+        store.commit_inbound(FROM_BOB, BOB.user_id, [message], _state(2))
+        assert store.max_lamport(WITH_BOB) == 6
+
+    def test_max_lamport_ignores_messages_still_buffered(
+        self, store: LocalStorePort
+    ) -> None:
+        """A message waiting behind a gap has not been seen: it orders nothing yet."""
+        waiting = make_received(seq=2, lamport=50)
+        store.commit_inbound(FROM_BOB, BOB.user_id, [], _state(1, [waiting]))
+        assert store.max_lamport(WITH_BOB) == 0
+        loaded = store.load_inbound_stream(FROM_BOB, BOB.user_id)
+        assert loaded is not None and loaded.pending[0].item.lamport == 50
+
+    def test_max_lamport_is_per_conversation(self, store: LocalStorePort) -> None:
+        """Each conversation has its own clock."""
+        store.enqueue_outgoing(make_outgoing(receiver=BOB, seq=1, lamport=9))
+        store.save_incoming_message(make_received(sender=CARLA, seq=1, lamport=4))
+        assert store.max_lamport(WITH_BOB) == 9
+        assert store.max_lamport(conversation_of(ALICE, CARLA)) == 4
+        assert store.max_lamport(conversation_of(ALICE, DAVID)) == 0
+
+    def test_the_lamport_timestamp_is_kept(self, store: LocalStorePort) -> None:
+        """Stored messages come back with the timestamp they were saved with."""
+        sent = make_outgoing(seq=1, lamport=12)
+        received = make_received(seq=1, lamport=13)
+        store.enqueue_outgoing(sent)
+        store.save_incoming_message(received)
+        assert _get(store, sent.message_id).lamport == 12
+        assert store.list_received(FROM_BOB)[0].lamport == 13
+
     # -------------------------------------------- incoming ordering state
 
     def test_an_unknown_stream_has_no_state(self, store: LocalStorePort) -> None:
@@ -825,6 +884,12 @@ class LocalStoreContract:
         expected = store.list_contacts()
         assert self.reopen(store).list_contacts() == expected
         assert len(expected) == 2
+
+    def test_max_lamport_survives_a_restart(self, store: LocalStorePort) -> None:
+        """The clock is derived from stored messages: a restart cannot set it back."""
+        store.enqueue_outgoing(make_outgoing(seq=1, lamport=5))
+        store.save_incoming_message(make_received(seq=1, lamport=7))
+        assert self.reopen(store).max_lamport(WITH_BOB) == 7
 
     def test_history_and_the_seen_set_survive_a_restart(
         self, store: LocalStorePort

@@ -341,6 +341,7 @@ class CryptoContract:
             1,
             1_700_000_000_000,
             body,
+            1,
         )
         envelope = Envelope.build(
             message_id=MSG_ID,

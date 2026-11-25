@@ -136,6 +136,7 @@ def _received_from_row(row: sqlite3.Row) -> ReceivedMessage:
         body=row["body"],
         sent_at_ms=row["sent_at_ms"],
         received_at_ms=row["received_at_ms"],
+        lamport=row["lamport"],
     )
 
 
@@ -147,6 +148,7 @@ def _outgoing_from_row(row: sqlite3.Row) -> OutgoingMessage:
         kind=MessageKind(row["kind"]),
         body=row["body"],
         sent_at_ms=row["sent_at_ms"],
+        lamport=row["lamport"],
         status=OutgoingStatus(row["status"]),
         attempts=row["attempts"],
         next_attempt_at_ms=row["next_attempt_at_ms"],
@@ -170,7 +172,8 @@ def _inbound_from_rows(stream: sqlite3.Row, pending: list[sqlite3.Row]) -> Inbou
 # row writers (run inside a write transaction)
 
 _RECEIVED_COLUMNS = (
-    "message_id, conversation_id, sender, seq, kind, body, sent_at_ms, received_at_ms"
+    "message_id, conversation_id, sender, seq, kind, body, sent_at_ms, "
+    "received_at_ms, lamport"
 )
 
 
@@ -184,6 +187,7 @@ def _received_values(message: ReceivedMessage) -> tuple[Any, ...]:
         message.body,
         message.sent_at_ms,
         message.received_at_ms,
+        message.lamport,
     )
 
 
@@ -199,7 +203,7 @@ def _insert_received(conn: sqlite3.Connection, message: ReceivedMessage) -> bool
     if seen.rowcount == 0:
         return False
     conn.execute(
-        f"INSERT INTO received_messages ({_RECEIVED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant column list
+        f"INSERT INTO received_messages ({_RECEIVED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant column list
         _received_values(message),
     )
     return True
@@ -453,10 +457,10 @@ class SqliteLocalStore(LocalStorePort):
         rows = self._fetch_all(
             """
             SELECT message_id, conversation_id, sender, seq, kind, body,
-                   sent_at_ms, received_at_ms
+                   sent_at_ms, received_at_ms, lamport
             FROM (
                 SELECT position, message_id, conversation_id, sender, seq, kind, body,
-                       sent_at_ms, received_at_ms
+                       sent_at_ms, received_at_ms, lamport
                 FROM received_messages
                 WHERE conversation_id = ?
                 ORDER BY position DESC
@@ -581,7 +585,7 @@ class SqliteLocalStore(LocalStorePort):
                 (*key, json.dumps(gone)),
             )
             conn.executemany(
-                f"INSERT INTO inbound_pending ({_RECEIVED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant column list
+                f"INSERT INTO inbound_pending ({_RECEIVED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant column list
                 [
                     _received_values(pending.item)
                     for pending in state.pending
@@ -603,8 +607,8 @@ class SqliteLocalStore(LocalStorePort):
                 """
                 INSERT INTO outgoing_messages
                     (message_id, conversation_id, seq, kind, body, sent_at_ms,
-                     envelope, status, attempts, next_attempt_at_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     lamport, envelope, status, attempts, next_attempt_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """,
                 (
@@ -614,6 +618,7 @@ class SqliteLocalStore(LocalStorePort):
                     message.kind.value,
                     message.body,
                     message.sent_at_ms,
+                    message.lamport,
                     message.envelope.to_bytes(),
                     message.status.value,
                     message.attempts,
@@ -643,7 +648,7 @@ class SqliteLocalStore(LocalStorePort):
         with self._write() as conn:
             stored = conn.execute(
                 """
-                SELECT envelope, conversation_id, seq, kind, body, sent_at_ms
+                SELECT envelope, conversation_id, seq, kind, body, sent_at_ms, lamport
                 FROM outgoing_messages WHERE message_id = ?
                 """,
                 (message.message_id.value,),
@@ -657,6 +662,7 @@ class SqliteLocalStore(LocalStorePort):
                 message.kind.value,
                 message.body,
                 message.sent_at_ms,
+                message.lamport,
             )
             if tuple(stored) != immutable:
                 raise ValueError(
@@ -680,7 +686,7 @@ class SqliteLocalStore(LocalStorePort):
         """Return one outgoing message, or ``None`` if unknown."""
         row = self._fetch_one(
             """
-            SELECT envelope, conversation_id, seq, kind, body, sent_at_ms,
+            SELECT envelope, conversation_id, seq, kind, body, sent_at_ms, lamport,
                    status, attempts, next_attempt_at_ms
             FROM outgoing_messages WHERE message_id = ?
             """,
@@ -707,7 +713,7 @@ class SqliteLocalStore(LocalStorePort):
         )
         rows = self._fetch_all(
             """
-            SELECT envelope, conversation_id, seq, kind, body, sent_at_ms,
+            SELECT envelope, conversation_id, seq, kind, body, sent_at_ms, lamport,
                    status, attempts, next_attempt_at_ms
             FROM outgoing_messages
             WHERE (:conversation IS NULL OR conversation_id = :conversation)
@@ -735,7 +741,7 @@ class SqliteLocalStore(LocalStorePort):
             raise ValueError("limit must be at least 1")
         rows = self._fetch_all(
             """
-            SELECT envelope, conversation_id, seq, kind, body, sent_at_ms,
+            SELECT envelope, conversation_id, seq, kind, body, sent_at_ms, lamport,
                    status, attempts, next_attempt_at_ms
             FROM outgoing_messages
             WHERE status = ?
@@ -746,6 +752,25 @@ class SqliteLocalStore(LocalStorePort):
             (OutgoingStatus.QUEUED.value, now_ms, limit),
         )
         return [_decode(_outgoing_from_row, row, "outgoing message") for row in rows]
+
+    def max_lamport(self, conversation_id: ConversationId) -> int:
+        """Highest Lamport timestamp sent or stored as received here, or ``0``.
+
+        Two ``MAX`` over the ``(conversation_id, lamport)`` indexes: SQLite
+        reads the last entry of each index, without scanning the messages.
+        """
+        row = self._fetch_one(
+            """
+            SELECT max(
+                coalesce((SELECT max(lamport) FROM outgoing_messages
+                          WHERE conversation_id = :conversation), 0),
+                coalesce((SELECT max(lamport) FROM received_messages
+                          WHERE conversation_id = :conversation), 0)
+            ) AS top
+            """,
+            {"conversation": conversation_id.value},
+        )
+        return 0 if row is None else int(row["top"])
 
     def last_outgoing_seq(self, conversation_id: ConversationId) -> int:
         """Highest ``seq`` ever used by the local user in this conversation, or ``0``."""

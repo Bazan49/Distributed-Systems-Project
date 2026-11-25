@@ -9,9 +9,12 @@ import pytest
 
 from source.domain.canonical import FormatError
 from source.domain.envelope import (
+    CONTENT_VERSION,
+    ENVELOPE_VERSION,
     MAX_BODY_BYTES,
     MAX_CIPHERTEXT_BYTES,
     MAX_ENVELOPE_BYTES,
+    MAX_LAMPORT,
     MAX_RECEIPT_IDS,
     Envelope,
     MessageContent,
@@ -55,6 +58,7 @@ def make_content(**over: Any) -> MessageContent:
         "seq": 1,
         "sent_at_ms": 1_700_000_000_000,
         "body": "hi",
+        "lamport": 1,
     }
     args.update(over)
     return MessageContent(**args)
@@ -283,7 +287,7 @@ def test_content_is_deterministic_and_canonical() -> None:
     assert c.to_bytes() == make_content().to_bytes()
     keys = list(json.loads(c.to_bytes()))
     assert keys == sorted(keys)
-    assert set(keys) == {"v", "kind", "conv", "seq", "sent_at_ms", "body"}
+    assert set(keys) == {"v", "kind", "conv", "seq", "lamport", "sent_at_ms", "body"}
 
 
 @pytest.mark.parametrize("kind", list(MessageKind))
@@ -297,6 +301,23 @@ def test_content_accepts_every_kind(kind: MessageKind) -> None:
 def test_content_rejects_invalid_seq(seq: Any) -> None:
     with pytest.raises(FormatError):
         make_content(seq=seq)
+
+
+@pytest.mark.parametrize("lamport", [1, 7, MAX_LAMPORT])
+def test_content_keeps_its_lamport_timestamp(lamport: int) -> None:
+    c = make_content(lamport=lamport)
+    assert MessageContent.from_bytes(c.to_bytes()).lamport == lamport
+
+
+@pytest.mark.parametrize("lamport", [0, -1, MAX_LAMPORT + 1, True, 1.5, "1", None])
+def test_content_rejects_invalid_lamport(lamport: Any) -> None:
+    with pytest.raises(FormatError):
+        make_content(lamport=lamport)
+
+
+def test_the_content_version_is_independent_of_the_envelope() -> None:
+    assert json.loads(make_content().to_bytes())["v"] == CONTENT_VERSION
+    assert CONTENT_VERSION != ENVELOPE_VERSION
 
 
 @pytest.mark.parametrize("t", [-1, True, 1.5, "0", None])
@@ -353,10 +374,26 @@ def test_content_rejects_lone_surrogates() -> None:
 
 @pytest.mark.parametrize(
     "change",
-    [{"kind": "other"}, {"conv": "xyz"}, {"seq": 0}, {"v": 2}, {"extra": 1}],
+    [
+        {"kind": "other"},
+        {"conv": "xyz"},
+        {"seq": 0},
+        {"lamport": 0},
+        {"lamport": MAX_LAMPORT + 1},
+        {"v": 1},
+        {"v": 3},
+        {"extra": 1},
+    ],
 )
 def test_content_from_bytes_rejects_invalid_data(change: dict[str, Any]) -> None:
     obj = json.loads(make_content().to_bytes()) | change
+    with pytest.raises(FormatError):
+        MessageContent.from_bytes(_dump(obj))
+
+
+def test_content_without_a_lamport_timestamp_is_rejected() -> None:
+    obj = json.loads(make_content().to_bytes())
+    del obj["lamport"]
     with pytest.raises(FormatError):
         MessageContent.from_bytes(_dump(obj))
 

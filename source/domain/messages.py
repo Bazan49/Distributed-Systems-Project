@@ -28,6 +28,7 @@ class ReceivedMessage:
     body: str
     sent_at_ms: int
     received_at_ms: int
+    lamport: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.message_id, MessageId) or not isinstance(
@@ -36,7 +37,12 @@ class ReceivedMessage:
             raise FormatError("invalid message_id or sender")
         # Reuse the content rules (seq >= 1, body limits, ...) instead of duplicating them.
         MessageContent(
-            self.kind, self.conversation_id, self.seq, self.sent_at_ms, self.body
+            self.kind,
+            self.conversation_id,
+            self.seq,
+            self.sent_at_ms,
+            self.body,
+            self.lamport,
         )
         if not is_int(self.received_at_ms) or self.received_at_ms < 0:
             raise FormatError("received_at_ms must be an integer >= 0")
@@ -58,6 +64,7 @@ class OutgoingMessage:
     kind: MessageKind
     body: str
     sent_at_ms: int
+    lamport: int
     status: OutgoingStatus = OutgoingStatus.QUEUED
     attempts: int = 0
     next_attempt_at_ms: int | None = None
@@ -68,7 +75,12 @@ class OutgoingMessage:
         if not isinstance(self.status, OutgoingStatus):
             raise FormatError("invalid status")
         content = MessageContent(
-            self.kind, self.conversation_id, self.seq, self.sent_at_ms, self.body
+            self.kind,
+            self.conversation_id,
+            self.seq,
+            self.sent_at_ms,
+            self.body,
+            self.lamport,
         )
         self.envelope.ensure_content_matches(content)
         if not is_int(self.attempts) or self.attempts < 0:

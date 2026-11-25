@@ -382,6 +382,92 @@ def test_a_version_1_database_is_upgraded_in_place(db_path: Path) -> None:
         assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
+def test_a_version_2_database_gets_lamport_timestamps(db_path: Path) -> None:
+    """Messages stored before Lamport timestamps existed get ``lamport = seq``
+    (valid, and growing with each sender's messages), in the history, the
+    outbox and the ordering buffer; and ``max_lamport`` uses its indexes."""
+    stored = make_received(seq=3)
+    buffered = make_received(seq=5)
+    sent = make_outgoing(seq=2)
+    conversation = stored.conversation_id
+    with _raw(db_path) as raw:
+        for version in (0, 1):
+            for statement in _MIGRATIONS[version]:
+                raw.execute(statement)
+        raw.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        raw.execute("PRAGMA user_version = 2")
+        raw.execute(
+            "INSERT INTO seen_message_ids (message_id) VALUES (?)",
+            (stored.message_id.value,),
+        )
+        old_received = (
+            "conversation_id, sender, seq, message_id, kind, body, "
+            "sent_at_ms, received_at_ms"
+        )
+        for table, message in (
+            ("received_messages", stored),
+            ("inbound_pending", buffered),
+        ):
+            if table == "inbound_pending":
+                raw.execute(
+                    "INSERT INTO inbound_streams VALUES (?, ?, 4, '[]')",
+                    (conversation.value, BOB.user_id.value),
+                )
+            raw.execute(
+                f"INSERT INTO {table} ({old_received}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608 - constant table names
+                (
+                    conversation.value,
+                    message.sender.value,
+                    message.seq,
+                    message.message_id.value,
+                    message.kind.value,
+                    message.body,
+                    message.sent_at_ms,
+                    message.received_at_ms,
+                ),
+            )
+        raw.execute(
+            """
+            INSERT INTO outgoing_messages
+                (message_id, conversation_id, seq, kind, body, sent_at_ms,
+                 envelope, status, attempts, next_attempt_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sent.message_id.value,
+                conversation.value,
+                sent.seq,
+                sent.kind.value,
+                sent.body,
+                sent.sent_at_ms,
+                sent.envelope.to_bytes(),
+                sent.status.value,
+                sent.attempts,
+                sent.next_attempt_at_ms,
+            ),
+        )
+
+    with SqliteLocalStore(db_path) as store:
+        assert [m.lamport for m in store.list_received(conversation)] == [3]
+        outgoing = store.get_outgoing(sent.message_id)
+        assert outgoing is not None and outgoing.lamport == 2
+        state = store.load_inbound_stream(conversation, BOB.user_id)
+        assert state is not None and state.pending[0].item.lamport == 5
+        assert store.max_lamport(conversation) == 3  # buffered messages do not count
+
+    with _raw(db_path) as raw:
+        assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        plan = " ".join(
+            str(row)
+            for row in raw.execute(
+                "EXPLAIN QUERY PLAN SELECT max(lamport) FROM received_messages "
+                "WHERE conversation_id = ?",
+                (conversation.value,),
+            )
+        )
+        assert "idx_received_lamport" in plan
+
+
 def test_a_database_error_while_loading_a_stream_is_a_store_error(
     db_path: Path,
 ) -> None:
