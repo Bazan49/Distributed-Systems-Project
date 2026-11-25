@@ -21,6 +21,7 @@ from source.domain.canonical import FormatError
 from source.domain.contacts import Contact, ContactState
 from source.domain.envelope import (
     MAX_BODY_BYTES,
+    MAX_LAMPORT,
     Envelope,
     MessageContent,
     MessageKind,
@@ -37,6 +38,7 @@ from tests.support.builders import (
     conversation_of,
     make_contact,
     make_identity,
+    make_received,
 )
 
 WITH_BOB = conversation_of(ALICE, BOB)
@@ -166,7 +168,7 @@ def test_the_receiver_verifies_and_decrypts_the_envelope(
     )
 
     assert content == MessageContent(
-        MessageKind.TEXT, WITH_BOB, 1, clock.now_ms(), "¿nos vemos mañana?"
+        MessageKind.TEXT, WITH_BOB, 1, clock.now_ms(), "¿nos vemos mañana?", 1
     )
 
 
@@ -336,6 +338,69 @@ def test_a_malformed_contact_key_is_refused_and_nothing_is_queued(
     with pytest.raises(ValueError):
         service.queue(ALICE_SESSION, contact, MessageKind.TEXT, "hola")
     assert store.list_outgoing() == []
+
+
+# ---------------- Lamport timestamps ----------------
+
+
+def test_the_first_message_of_a_conversation_has_timestamp_1(
+    service: SendMessageService,
+) -> None:
+    assert service.send_text(ALICE_SESSION, BOB.user_id, "hola").lamport == 1
+
+
+def test_each_message_is_stamped_after_everything_before_it(
+    service: SendMessageService, crypto: FakeCrypto
+) -> None:
+    stamps = [
+        service.send_text(ALICE_SESSION, BOB.user_id, f"m{i}").lamport for i in range(3)
+    ]
+    last = service.send_text(ALICE_SESSION, BOB.user_id, "fin")
+
+    assert stamps == [1, 2, 3]
+    content = open_as_receiver(
+        crypto, last.envelope, ALICE.keys.public_key, BOB.keys.private_key
+    )
+    assert content.lamport == last.lamport == 4  # what travels is what is stored
+
+
+def test_a_reply_is_stamped_after_the_message_it_answers(
+    service: SendMessageService, store: MemoryLocalStore
+) -> None:
+    """Bob's clock ran ahead: Alice's answer must still come after his message."""
+    service.send_text(ALICE_SESSION, BOB.user_id, "¿qué tal?")
+    store.save_incoming_message(make_received(sender=BOB, seq=1, lamport=40))
+
+    assert service.send_text(ALICE_SESSION, BOB.user_id, "bien").lamport == 41
+
+
+def test_contact_messages_move_the_clock_too(service: SendMessageService) -> None:
+    contact = make_contact(CARLA, state=ContactState.OUTGOING_REQUEST)
+    service.queue(ALICE_SESSION, contact, MessageKind.CONTACT_REQUEST, "link")
+
+    assert service.queue(ALICE_SESSION, contact, MessageKind.TEXT, "hola").lamport == 2
+
+
+def test_each_conversation_has_its_own_clock(
+    service: SendMessageService, store: MemoryLocalStore
+) -> None:
+    store.save_contact(make_contact(CARLA, state=ContactState.ACTIVE))
+    store.save_incoming_message(make_received(sender=BOB, seq=1, lamport=90))
+
+    assert service.send_text(ALICE_SESSION, CARLA.user_id, "hola").lamport == 1
+
+
+def test_a_conversation_at_the_timestamp_limit_cannot_go_on(
+    service: SendMessageService, store: MemoryLocalStore
+) -> None:
+    """A peer that sent the largest timestamp blocks only its own conversation."""
+    store.save_incoming_message(make_received(sender=BOB, seq=1, lamport=MAX_LAMPORT))
+    store.save_contact(make_contact(CARLA, state=ContactState.ACTIVE))
+
+    with pytest.raises(ValueError):
+        service.send_text(ALICE_SESSION, BOB.user_id, "hola")
+    assert store.list_outgoing() == []
+    assert service.send_text(ALICE_SESSION, CARLA.user_id, "hola").lamport == 1
 
 
 # ---------------- concurrency ----------------

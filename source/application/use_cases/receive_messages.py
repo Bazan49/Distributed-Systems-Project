@@ -317,6 +317,7 @@ class ReceiveMessagesService:
             body=content.body,
             sent_at_ms=content.sent_at_ms,
             received_at_ms=self._clock.now_ms(),
+            lamport=content.lamport,
         )
 
         # 6-7: order, then commit history and stream state together.
@@ -481,5 +482,6 @@ def _log_stored(sender: UserId, released: Sequence[Delivery[ReceivedMessage]]) -
             msg=delivery.message_id,
             peer=sender,
             seq=delivery.seq,
+            lamport=delivery.item.lamport,
             late=delivery.late,
         )

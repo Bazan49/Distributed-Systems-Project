@@ -197,6 +197,17 @@ class LocalStorePort(Protocol):
         """
         ...
 
+    def max_lamport(self, conversation_id: ConversationId) -> int:
+        """Return the highest Lamport timestamp known in this conversation.
+
+        It counts every message the local user sent (of any kind) and every
+        message stored in the history; NOT the ones buffered behind a gap,
+        which the user has not seen yet. Returns ``0`` if there is none. The
+        next message the local user sends is stamped with this plus one.
+
+        """
+        ...
+
     def last_outgoing_seq(self, conversation_id: ConversationId) -> int:
         """Return the highest ``seq`` ever used by the local user in this conversation.
 

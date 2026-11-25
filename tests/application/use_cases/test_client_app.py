@@ -427,6 +427,7 @@ def test_history_shows_a_missing_message_and_fills_it_when_it_arrives(
                 body,
                 seq,
                 seq,
+                seq,
             )
         )
 
@@ -479,6 +480,106 @@ def test_history_limit(world: World) -> None:
     ]
     with pytest.raises(ValueError):
         alice.history(bob.profile().user_id, limit=0)
+
+
+# ---------------- Lamport order ----------------
+
+
+class ClockBehind:
+    """A device whose wall clock is ``behind_ms`` late; time passes as for everyone."""
+
+    def __init__(self, clock: ManualClock, behind_ms: int) -> None:
+        self._clock = clock
+        self._behind_ms = behind_ms
+
+    def now_ms(self) -> int:
+        return self._clock.now_ms() - self._behind_ms
+
+    def monotonic_ms(self) -> int:
+        return self._clock.monotonic_ms()
+
+    def sleep_ms(self, duration_ms: int) -> None:
+        self._clock.sleep_ms(duration_ms)
+
+
+def bodies(app: ClientApp, contact: ClientApp) -> list[str]:
+    return [e.body for e in app.history(contact.profile().user_id)]
+
+
+def test_a_reply_comes_after_the_question_even_if_its_clock_is_behind(
+    world: World,
+) -> None:
+    """Bob's clock is 2 minutes late, so his reply carries an EARLIER send
+    time than the question. Both histories still show question, then reply."""
+    alice = world.user("alice")
+    bob = ClientApp(
+        crypto=world.crypto,
+        store=MemoryLocalStore(),
+        clock=ClockBehind(world.clock, 120_000),
+        gateway=world.gateway,
+        peers_for=world.network.transport_for,
+        rng=random.Random(0),
+    )
+    bob.register("Bob", PASSWORD)
+    # His presence expires before it is published (late clock), so everything
+    # goes through the mailboxes: let both collect between steps.
+    alice.add_contact(bob.profile().link)
+    world.pass_time(20_000, alice, bob)
+    bob.accept(alice.profile().user_id)
+    world.pass_time(20_000, alice, bob)
+
+    question = alice.send(bob.profile().user_id, "¿vienes?")
+    world.pass_time(20_000, alice, bob)
+    reply = bob.send(alice.profile().user_id, "sí")
+    world.pass_time(20_000, alice, bob)
+
+    assert reply.sent_at_ms < question.sent_at_ms  # the wall clocks disagree
+    assert reply.lamport > question.lamport
+    assert bodies(alice, bob) == ["¿vienes?", "sí"]
+    assert bodies(bob, alice) == ["¿vienes?", "sí"]
+
+
+def test_messages_written_at_the_same_time_are_in_the_same_order_on_both_sides(
+    world: World,
+) -> None:
+    """Neither had seen the other's message: equal timestamps, broken by sender
+    id, so both devices agree on one order."""
+    alice, bob = world.user("alice"), world.user("bob")
+    befriend(alice, bob)
+    world.pass_time(2_000, alice, bob)
+    alice_id, bob_id = alice.profile().user_id, bob.profile().user_id
+
+    bob.logout()
+    from_alice = alice.send(bob_id, "de Alice")  # waits in the mailboxes
+    alice.logout()
+    bob.login(PASSWORD)
+    from_bob = bob.send(alice_id, "de Bob")  # before collecting Alice's
+    alice.login(PASSWORD)
+    world.pass_time(20_000, alice, bob)
+
+    assert from_alice.lamport == from_bob.lamport  # concurrent
+    first, second = sorted([(alice_id.value, "de Alice"), (bob_id.value, "de Bob")])
+    assert bodies(alice, bob) == [first[1], second[1]]
+    assert bodies(bob, alice) == [first[1], second[1]]
+
+
+def test_a_missing_entry_takes_the_timestamp_of_the_message_after_it(
+    world: World,
+) -> None:
+    alice, bob = world.user("alice"), world.user("bob")
+    befriend(alice, bob)
+    world.pass_time(2_000, alice, bob)
+    bob_id = bob.profile().user_id
+    conversation = ConversationId.between(alice.profile().user_id, bob_id)
+    alice._store.save_incoming_message(  # seq 2 never came; seq 3 did
+        ReceivedMessage(
+            MessageId.new(), conversation, bob_id, 3, MessageKind.TEXT, "tres", 0, 0, 9
+        )
+    )
+
+    missing, third = alice.history(bob_id)[-2:]
+    assert (missing.kind, missing.lamport) == (EntryKind.MISSING, 9)
+    assert (third.body, third.lamport) == ("tres", 9)
 
 
 # ---------------- tick ----------------

@@ -105,6 +105,7 @@ Una línea real del archivo:
 | `conv` | `ConversationId` | Acortado a 8 automáticamente |
 | `node`, `nodes`, `confirmed_by` | `NodeId` o listas de ellos | Tal cual |
 | `seq`, `attempt` | Enteros | Tal cual |
+| `lamport` | Sello de Lamport del mensaje (orden del historial) | Tal cual |
 | `duration_ms`, `retry_in_ms` | Milisegundos | Tal cual |
 | `outcome`, `reason`, `status` | Resultado o motivo | El valor del `Enum` (`"accepted"`, `"bad_signature"`…) |
 
@@ -303,13 +304,13 @@ Este es el contrato de eventos.
 | `login.succeeded` | INFO | `user` | `IdentityService.unlock` | ✅ |
 | `login.failed` | WARNING; ERROR si `key_mismatch` | `user` (si hay cuenta), `reason` (`not_registered`, `wrong_password`, `key_mismatch`) | `IdentityService.unlock` | ✅ |
 | `session.started` / `session.ended` | INFO | `user` | `ClientApp` (login / logout) | ✅ |
-| `message.queued` | INFO | `msg`, `peer`, `conv`, `seq`, `kind` | `SendMessageService.queue` | ✅ |
+| `message.queued` | INFO | `msg`, `peer`, `conv`, `seq`, `lamport`, `kind` | `SendMessageService.queue` | ✅ |
 | `delivery.direct_delivered` | INFO | `msg`, `seq` | `DeliveryService` | ✅ |
 | `delivery.mailbox_accepted` | INFO | `msg`, `seq`, `attempt` | `DeliveryService` (los nodos que confirmaron van en `quorum.write`) | ✅ |
 | `delivery.retry_scheduled` | WARNING | `msg`, `seq`, `attempt`, `retry_in_ms` | `DeliveryService` | ✅ |
 | `delivery.expired` | WARNING | `msg`, `seq`, `attempt` | `DeliveryService` | ✅ |
 | `delivery.waiting_for_earlier` | DEBUG | `msg`, `seq` | `DeliveryService` | ✅ |
-| `receive.stored` | INFO | `msg`, `peer`, `seq`, `late` | `ReceiveMessagesService` (uno por mensaje guardado, también los que libera un hueco) | ✅ |
+| `receive.stored` | INFO | `msg`, `peer`, `seq`, `lamport`, `late` | `ReceiveMessagesService` (uno por mensaje guardado, también los que libera un hueco) | ✅ |
 | `receive.buffered` / `receive.duplicate` | DEBUG | `msg`, `peer` | `ReceiveMessagesService` | ✅ |
 | `receive.deferred` | INFO | `msg`, `peer`, `reason` (`unknown_sender`, `too_far_ahead`) | `ReceiveMessagesService`: no se confirma, el sobre volverá | ✅ |
 | `receive.rejected` | WARNING | `msg`, `peer`, `reason` (`bad_signature`, `unreadable`, `conflict`, `not_for_me`) | `ReceiveMessagesService` | ✅ |
