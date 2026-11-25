@@ -64,6 +64,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Protocol
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.local_store import LocalStorePort
 from source.application.ports.peer_transport import PeerTransportPort
@@ -84,6 +85,7 @@ __all__ = [
     "PresenceLookup",
 ]
 
+log = get_logger(__name__)
 
 # what this use case needs from the other half
 
@@ -261,6 +263,11 @@ class DeliveryService:
         for message in due:
             conversation = message.conversation_id
             if heads.get(conversation) != message.seq:
+                log.debug(
+                    "delivery.waiting_for_earlier",
+                    msg=message.message_id,
+                    seq=message.seq,
+                )
                 outcomes.append(
                     (message.message_id, DeliveryOutcome.WAITING_FOR_EARLIER)
                 )
@@ -313,12 +320,21 @@ class DeliveryService:
             )
             if sent is DirectSendResult.DELIVERED:
                 self._save(message, OutgoingStatus.DELIVERED)
+                log.info(
+                    "delivery.direct_delivered", msg=message.message_id, seq=message.seq
+                )
                 return DeliveryOutcome.DELIVERED_DIRECT
             # A peer that just failed is not worth another direct try this round.
             online[receiver] = False
 
         if self._mailbox.deposit(message.envelope).accepted:
             self._save(message, OutgoingStatus.ACCEPTED)
+            log.info(
+                "delivery.mailbox_accepted",
+                msg=message.message_id,
+                seq=message.seq,
+                attempt=message.attempts + 1,
+            )
             return DeliveryOutcome.ACCEPTED_BY_MAILBOX
 
         return self._fail(message)
@@ -330,11 +346,24 @@ class DeliveryService:
             self._save(
                 message, OutgoingStatus.EXPIRED, attempts=attempts, retry_at=None
             )
+            log.warning(
+                "delivery.expired",
+                msg=message.message_id,
+                seq=message.seq,
+                attempt=attempts,
+            )
             return DeliveryOutcome.EXPIRED
         ceiling = self._policy.backoff_ceiling_ms(attempts)
         wait = self._rng.randint(ceiling // 2, ceiling)
         retry_at = self._clock.now_ms() + wait
         self._save(message, OutgoingStatus.QUEUED, attempts=attempts, retry_at=retry_at)
+        log.warning(
+            "delivery.retry_scheduled",
+            msg=message.message_id,
+            seq=message.seq,
+            attempt=attempts,
+            retry_in_ms=wait,
+        )
         return DeliveryOutcome.RETRY_SCHEDULED
 
     def _save(

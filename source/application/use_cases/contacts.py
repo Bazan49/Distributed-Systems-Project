@@ -44,6 +44,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.errors import DecryptionError
@@ -67,6 +68,8 @@ __all__ = [
     "InvalidLinkError",
     "NoPendingRequestError",
 ]
+
+log = get_logger(__name__)
 
 # Bounds the requests inbox: anyone holding your link can send requests, so
 # a flood must not grow local storage without limit. Requests beyond it are
@@ -179,6 +182,7 @@ class ContactsService:
         """
         link = self._parse_link(link_text)
         if link.user_id == session.user_id:
+            log.info("contact.link_refused", reason="own_link")
             raise InvalidLinkError("this is your own contact link")
 
         existing = self._store.get_contact(link.user_id)
@@ -190,6 +194,7 @@ class ContactsService:
                 if existing.state is ContactState.ACTIVE
                 else AddOutcome.ALREADY_REQUESTED
             )
+            log.info("contact.added", peer=existing.user_id, outcome=outcome)
             return AddResult(outcome, self._view(existing))
 
         contact = Contact(
@@ -204,7 +209,10 @@ class ContactsService:
             session, contact, MessageKind.CONTACT_REQUEST, self.my_link(session)
         )
         self._store.save_contact(contact)
-        return AddResult(AddOutcome.REQUEST_SENT, self._view(contact))
+        view = self._view(contact)
+        log.info("contact.added", peer=contact.user_id, outcome=AddOutcome.REQUEST_SENT)
+        _log_look_alikes(view)
+        return AddResult(AddOutcome.REQUEST_SENT, view)
 
     # the requests inbox
 
@@ -232,6 +240,7 @@ class ContactsService:
             NoPendingRequestError: no pending request from ``user_id``.
         """
         self._store.delete_contact(self._pending(user_id).user_id)
+        log.info("contact.rejected", peer=user_id)
 
     # contacts
 
@@ -243,7 +252,10 @@ class ContactsService:
         is treated as coming from a stranger. Adding them again later sends a
         fresh request.
         """
-        return self._store.delete_contact(user_id)
+        existed = self._store.delete_contact(user_id)
+        if existed:
+            log.info("contact.removed", peer=user_id)
+        return existed
 
     def view(self, user_id: UserId) -> ContactView | None:
         """A contact with its fingerprint and look-alikes, or None if unknown."""
@@ -277,6 +289,9 @@ class ContactsService:
         if len(self._store.list_contacts(ContactState.INCOMING_REQUEST)) >= (
             MAX_PENDING_REQUESTS
         ):
+            log.warning(
+                "contact.request_dropped", peer=envelope.sender, reason="inbox_full"
+            )
             return None
         try:
             content = MessageContent.from_bytes(
@@ -287,14 +302,23 @@ class ContactsService:
                 return None
             link = ContactLink.from_text(content.body)
         except (DecryptionError, FormatError):
+            log.warning(
+                "contact.request_dropped", peer=envelope.sender, reason="unreadable"
+            )
             return None
         if link.user_id != envelope.sender:
+            log.warning(
+                "contact.request_dropped",
+                peer=envelope.sender,
+                reason="sender_mismatch",
+            )
             return None
-        if not self._link_is_authentic(link):
-            return None
-        if not self._crypto.verify(
+        if not self._link_is_authentic(link) or not self._crypto.verify(
             link.public_key, envelope.signing_bytes(), envelope.signature
         ):
+            log.warning(
+                "contact.request_dropped", peer=envelope.sender, reason="bad_signature"
+            )
             return None
         contact = Contact(
             user_id=link.user_id,
@@ -304,6 +328,8 @@ class ContactsService:
             created_at_ms=self._clock.now_ms(),
         )
         self._store.save_contact(contact)
+        log.info("contact.request_received", peer=contact.user_id)
+        _log_look_alikes(self._view(contact))
         return contact
 
     def on_released(
@@ -332,11 +358,13 @@ class ContactsService:
                 MessageKind.CONTACT_REQUEST,
             ):
                 self._store.save_contact(replace(contact, state=ContactState.ACTIVE))
+                log.info("contact.confirmed", peer=contact.user_id)
             elif (
                 contact.state is ContactState.ACTIVE
                 and message.kind is MessageKind.CONTACT_REQUEST
             ):
                 self._sender.queue(session, contact, MessageKind.CONTACT_ACCEPT, "")
+                log.info("contact.accepted_again", peer=contact.user_id)
 
     # internals
 
@@ -345,6 +373,7 @@ class ContactsService:
         self._sender.queue(session, contact, MessageKind.CONTACT_ACCEPT, "")
         active = replace(contact, state=ContactState.ACTIVE)
         self._store.save_contact(active)
+        log.info("contact.accepted", peer=active.user_id)
         return self._view(active)
 
     def _pending(self, user_id: UserId) -> Contact:
@@ -364,8 +393,10 @@ class ContactsService:
         try:
             link = ContactLink.from_text(text)
         except FormatError as exc:
+            log.info("contact.link_refused", reason="malformed")
             raise InvalidLinkError(f"invalid contact link: {exc}") from exc
         if not self._link_is_authentic(link):
+            log.warning("contact.link_refused", reason="bad_signature")
             raise InvalidLinkError("the contact link's signature is not valid")
         return link
 
@@ -386,4 +417,14 @@ class ContactsService:
             contact=contact,
             fingerprint=self._crypto.fingerprint(contact.public_key),
             look_alikes=look_alikes,
+        )
+
+
+def _log_look_alikes(view: ContactView) -> None:
+    """Warn when a new contact has the same alias as others (possible impersonation)."""
+    if view.look_alikes:
+        log.warning(
+            "contact.look_alike",
+            peer=view.contact.user_id,
+            look_alikes=[c.user_id for c in view.look_alikes],
         )

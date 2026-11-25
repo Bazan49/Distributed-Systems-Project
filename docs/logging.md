@@ -290,30 +290,40 @@ junto a cada `return`**.
 
 ## Catálogo de eventos
 
-Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
+Este es el contrato de eventos.
+
 ✅ implementado · ⏳ pendiente.
 
 ### Cliente (Persona A)
 
 | Evento | Nivel | Campos | Dónde | |
 |---|---|---|---|---|
-| `account.created` | INFO | `user` | `IdentityService.register` | ⏳ |
-| `login.succeeded` / `login.failed` | INFO / WARNING | `user` | `IdentityService.unlock` | ⏳ |
-| `session.started` / `session.ended` | INFO | `user` | `ClientApp` | ⏳ |
-| `message.queued` | INFO | `msg`, `conv`, `seq`, `kind` | `SendMessageService.queue` | ⏳ |
-| `delivery.direct_delivered` | INFO | `msg`, `seq` | `DeliveryService` | ⏳ |
-| `delivery.mailbox_accepted` | INFO | `msg`, `seq`, `attempt`, `confirmed_by` | `DeliveryService` | ⏳ |
-| `delivery.retry_scheduled` | WARNING | `msg`, `seq`, `attempt`, `retry_in_ms` | `DeliveryService` | ⏳ |
-| `delivery.expired` | WARNING | `msg`, `seq`, `attempt` | `DeliveryService` | ⏳ |
-| `delivery.waiting_for_earlier` | DEBUG | `msg`, `seq` | `DeliveryService` | ⏳ |
-| `receive.stored` | INFO | `msg`, `peer`, `seq`, `late` | `ReceiveMessagesService` | ⏳ |
-| `receive.buffered` / `receive.duplicate` | DEBUG | `msg`, `peer`, `seq` | `ReceiveMessagesService` | ⏳ |
-| `receive.rejected` | WARNING | `msg`, `peer`, `reason` (`bad_signature`, `unreadable`, `unknown_sender`…) | `ReceiveMessagesService` | ⏳ |
-| `receive.gap_skipped` | WARNING | `peer`, `conv`, `from_seq`, `to_seq` | `ReceiveMessagesService.expire_gaps` | ⏳ |
-| `contact.request_sent` / `contact.request_received` | INFO | `peer`, `outcome` | `ContactsService` | ⏳ |
-| `contact.accepted` / `contact.rejected` / `contact.removed` | INFO | `peer` | `ContactsService` | ⏳ |
-| `contact.look_alike` | WARNING | `peer`, `look_alikes` | `ContactsService` | ⏳ |
-| `client.tick` | DEBUG | `collected`, `stored`, `gaps`, `delivered` | `ClientApp.tick` | ⏳ |
+| `account.created` | INFO | `user` | `IdentityService.register` | ✅ |
+| `account.refused` | INFO | `reason` (`invalid_alias`, `weak_password`, `already_registered`) | `IdentityService.register` | ✅ |
+| `login.succeeded` | INFO | `user` | `IdentityService.unlock` | ✅ |
+| `login.failed` | WARNING; ERROR si `key_mismatch` | `user` (si hay cuenta), `reason` (`not_registered`, `wrong_password`, `key_mismatch`) | `IdentityService.unlock` | ✅ |
+| `session.started` / `session.ended` | INFO | `user` | `ClientApp` (login / logout) | ✅ |
+| `message.queued` | INFO | `msg`, `peer`, `conv`, `seq`, `kind` | `SendMessageService.queue` | ✅ |
+| `delivery.direct_delivered` | INFO | `msg`, `seq` | `DeliveryService` | ✅ |
+| `delivery.mailbox_accepted` | INFO | `msg`, `seq`, `attempt` | `DeliveryService` (los nodos que confirmaron van en `quorum.write`) | ✅ |
+| `delivery.retry_scheduled` | WARNING | `msg`, `seq`, `attempt`, `retry_in_ms` | `DeliveryService` | ✅ |
+| `delivery.expired` | WARNING | `msg`, `seq`, `attempt` | `DeliveryService` | ✅ |
+| `delivery.waiting_for_earlier` | DEBUG | `msg`, `seq` | `DeliveryService` | ✅ |
+| `receive.stored` | INFO | `msg`, `peer`, `seq`, `late` | `ReceiveMessagesService` (uno por mensaje guardado, también los que libera un hueco) | ✅ |
+| `receive.buffered` / `receive.duplicate` | DEBUG | `msg`, `peer` | `ReceiveMessagesService` | ✅ |
+| `receive.deferred` | INFO | `msg`, `peer`, `reason` (`unknown_sender`, `too_far_ahead`) | `ReceiveMessagesService`: no se confirma, el sobre volverá | ✅ |
+| `receive.rejected` | WARNING | `msg`, `peer`, `reason` (`bad_signature`, `unreadable`, `conflict`, `not_for_me`) | `ReceiveMessagesService` | ✅ |
+| `receive.gap_skipped` | WARNING | `peer`, `conv`, `from_seq`, `to_seq` | `ReceiveMessagesService.expire_gaps` | ✅ |
+| `contact.added` | INFO | `peer`, `outcome` (`request_sent`, `already_requested`, `already_contact`) | `ContactsService.add_contact` | ✅ |
+| `contact.link_refused` | INFO; WARNING si `bad_signature` | `reason` (`malformed`, `bad_signature`, `own_link`) | `ContactsService.add_contact` | ✅ |
+| `contact.request_received` | INFO | `peer` | `ContactsService.introduce` | ✅ |
+| `contact.request_dropped` | WARNING | `peer`, `reason` (`inbox_full`, `unreadable`, `sender_mismatch`, `bad_signature`) | `ContactsService.introduce` | ✅ |
+| `contact.accepted` | INFO | `peer` | `ContactsService`: aceptamos su solicitud | ✅ |
+| `contact.confirmed` | INFO | `peer` | `ContactsService.on_released`: aceptaron la nuestra | ✅ |
+| `contact.accepted_again` | INFO | `peer` | `ContactsService.on_released`: un contacto activo volvió a pedirlo | ✅ |
+| `contact.rejected` / `contact.removed` | INFO | `peer` | `ContactsService` | ✅ |
+| `contact.look_alike` | WARNING | `peer`, `look_alikes` | `ContactsService`, al añadir o recibir un contacto con el mismo alias que otros | ✅ |
+| `client.tick` | DEBUG | `collected`, `stored`, `gaps`, `delivered`, `retried` | `ClientApp.tick`, solo si la vuelta hizo algo | ✅ |
 
 ### Nodos y Ray (Persona B)
 
@@ -335,7 +345,6 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 | Evento | Nivel | Campos | Dónde | |
 |---|---|---|---|---|
 | `logging.configured` | INFO | `log_level`, `file` | `configure_logging` | ✅ |
-| `client.online` | INFO | `user` | Actor del cliente, al registrarse o iniciar sesión | ✅ |
 | `client.tick_failed` | ERROR | (traza) | Bucle del actor del cliente | ✅ |
 | `direct.listening` / `direct.stopped` | INFO | `user` | `RayPeerTransport` | ✅ |
 | `direct.unreachable` | DEBUG | `to`, `msg`, `reason` | `RayPeerTransport` | ✅ |

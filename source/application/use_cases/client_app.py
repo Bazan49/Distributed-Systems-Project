@@ -41,6 +41,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.local_store import LocalStorePort
@@ -56,6 +57,7 @@ from source.application.use_cases.contacts import (
     ContactView,
 )
 from source.application.use_cases.delivery import (
+    DeliveryOutcome,
     DeliveryPolicy,
     DeliveryReport,
     DeliveryService,
@@ -94,6 +96,8 @@ __all__ = [
     "Profile",
     "TickReport",
 ]
+
+log = get_logger(__name__)
 
 
 # errors
@@ -286,8 +290,10 @@ class ClientApp:
         """
         if self._session is None:
             return
+        user = self._session.identity.user_id
         self._session.peers.stop_listening()
         self._session = None
+        log.info("session.ended", user=user)
 
     def profile(self) -> Profile:
         """The logged-in user: id, alias, fingerprint and contact link."""
@@ -406,13 +412,15 @@ class ClientApp:
         )
         gaps = tuple(self._receiver.expire_gaps(session.identity))
         delivery = session.delivery.deliver_due()
-        return TickReport(
+        report = TickReport(
             membership_refreshed=refreshed,
             presence_published=None if attempt is None else attempt.accepted,
             collected=collected,
             gaps=gaps,
             delivery=delivery,
         )
+        _log_tick(report)
+        return report
 
     def receive_direct(self, envelope: Envelope) -> ReceiveResult:
         """Receive an envelope a peer sent straight to us.
@@ -447,6 +455,7 @@ class ClientApp:
         self._receiver.resume(identity)
         self._refresh_membership_if_due()
         directory.renew_if_due()
+        log.info("session.started", user=identity.user_id)
         return self._profile(identity)
 
     def _on_direct(self, envelope: Envelope) -> None:
@@ -551,3 +560,23 @@ def _received_entries(
                 )
             )
     return entries
+
+
+def _log_tick(report: TickReport) -> None:
+    """A summary of one tick, only when it did something."""
+    collected = 0 if report.collected is None else len(report.collected.results)
+    delivery = report.delivery
+    delivered = delivery.count(DeliveryOutcome.DELIVERED_DIRECT) + delivery.count(
+        DeliveryOutcome.ACCEPTED_BY_MAILBOX
+    )
+    retried = delivery.count(DeliveryOutcome.RETRY_SCHEDULED)
+    stored = len(report.stored)
+    if collected or stored or report.gaps or delivered or retried:
+        log.debug(
+            "client.tick",
+            collected=collected,
+            stored=stored,
+            gaps=len(report.gaps),
+            delivered=delivered,
+            retried=retried,
+        )
