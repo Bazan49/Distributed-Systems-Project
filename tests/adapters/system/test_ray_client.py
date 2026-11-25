@@ -136,15 +136,11 @@ def test_calls_without_an_answer_reach_the_client(
     ("method", "args"),
     [("register", ("Alice", "password")), ("login", ("password",))],
 )
-def test_going_online_returns_the_profile_and_is_logged(
-    method: str, args: tuple[Any, ...], caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level("INFO", logger="p08")
+def test_going_online_returns_the_profile(method: str, args: tuple[Any, ...]) -> None:
     built = Built()
     assert getattr(built.host, method)(*args) == PROFILE
     assert built.app.calls == [(method, args)]
     assert built.host.logged_in()
-    assert has_event(caplog, "client.online")
 
 
 def test_tick_does_nothing_while_logged_out() -> None:

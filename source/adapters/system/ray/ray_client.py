@@ -45,7 +45,7 @@ from typing import Any
 
 import ray
 
-from source.application.observability import get_logger, short
+from source.application.observability import get_logger
 from source.application.use_cases.client_app import (
     ClientApp,
     HistoryEntry,
@@ -150,15 +150,11 @@ class ClientHost:
 
     def register(self, alias: str, password: str) -> Profile:
         with self._lock:
-            profile = self._app.register(alias, password)
-        log.info("client.online", user=short(profile.user_id.value))
-        return profile
+            return self._app.register(alias, password)
 
     def login(self, password: str) -> Profile:
         with self._lock:
-            profile = self._app.login(password)
-        log.info("client.online", user=short(profile.user_id.value))
-        return profile
+            return self._app.login(password)
 
     def logout(self) -> None:
         with self._lock:

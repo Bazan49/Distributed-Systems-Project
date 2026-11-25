@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.errors import DecryptionError
@@ -97,6 +98,9 @@ class ContactGate(Protocol):
     ) -> None:
         """Called with messages about to be stored, in order. Must be idempotent."""
         ...
+
+
+log = get_logger(__name__)
 
 
 # results
@@ -264,6 +268,12 @@ class ReceiveMessagesService:
             StoreError: the local store failed. Nothing about this envelope
                 was confirmed, so it is safe to receive it again later.
         """
+        result = self._receive(session, envelope)
+        _log_result(envelope.sender, result)
+        return result
+
+    def _receive(self, session: UnlockedIdentity, envelope: Envelope) -> ReceiveResult:
+        """Receive a single envelope and process it."""
         if not isinstance(session, UnlockedIdentity):
             raise TypeError("session must be an UnlockedIdentity")
         if not isinstance(envelope, Envelope):
@@ -380,6 +390,14 @@ class ReceiveMessagesService:
                 continue
             self._commit(session, key, stream, gap.released)
             reports.append(GapReport(key[0], key[1], gap.skipped, gap.released))
+            log.warning(
+                "receive.gap_skipped",
+                peer=key[1],
+                conv=key[0],
+                from_seq=gap.skipped.start,
+                to_seq=gap.skipped.stop - 1,
+            )
+            _log_stored(key[1], gap.released)
         return reports
 
     # internals
@@ -421,3 +439,47 @@ class ReceiveMessagesService:
         except BaseException:
             self._streams.pop(key, None)
             raise
+
+
+# logging
+
+
+_REJECTED = frozenset(
+    {
+        ReceiveStatus.BAD_SIGNATURE,
+        ReceiveStatus.UNREADABLE,
+        ReceiveStatus.CONFLICT,
+        ReceiveStatus.NOT_FOR_ME,
+    }
+)
+"""Refused for good: forged, altered, malformed or misdirected."""
+
+_DEFERRED = frozenset({ReceiveStatus.TOO_FAR_AHEAD, ReceiveStatus.UNKNOWN_SENDER})
+"""Not handled now; the envelope comes back later."""
+
+
+def _log_result(sender: UserId, result: ReceiveResult) -> None:
+    """One event for what happened to the envelope, plus one per stored message."""
+    status = result.status
+    if status in _REJECTED:
+        log.warning(
+            "receive.rejected", msg=result.message_id, peer=sender, reason=status
+        )
+    elif status in _DEFERRED:
+        log.info("receive.deferred", msg=result.message_id, peer=sender, reason=status)
+    elif status is ReceiveStatus.BUFFERED:
+        log.debug("receive.buffered", msg=result.message_id, peer=sender)
+    elif status is ReceiveStatus.DUPLICATE:
+        log.debug("receive.duplicate", msg=result.message_id, peer=sender)
+    _log_stored(sender, result.released)
+
+
+def _log_stored(sender: UserId, released: Sequence[Delivery[ReceivedMessage]]) -> None:
+    for delivery in released:
+        log.info(
+            "receive.stored",
+            msg=delivery.message_id,
+            peer=sender,
+            seq=delivery.seq,
+            late=delivery.late,
+        )

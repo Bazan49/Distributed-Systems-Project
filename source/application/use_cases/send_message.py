@@ -25,6 +25,7 @@ Order of the protections (encrypt-then-sign):
 
 from __future__ import annotations
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.local_store import LocalStorePort
@@ -42,6 +43,7 @@ __all__ = [
     "UnknownContactError",
 ]
 
+log = get_logger(__name__)
 
 # errors
 
@@ -160,4 +162,12 @@ class SendMessageService:
             next_attempt_at_ms=None,  # due at once: the delivery policy picks it up
         )
         self._store.enqueue_outgoing(message)
+        log.info(
+            "message.queued",
+            msg=message.message_id,
+            peer=receiver,
+            conv=conversation_id,
+            seq=seq,
+            kind=kind,
+        )
         return message
