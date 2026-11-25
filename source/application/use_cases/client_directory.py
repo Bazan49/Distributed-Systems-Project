@@ -12,6 +12,15 @@ the quorum (which nodes, how to combine answers, checking every record again)
 in ``QuorumClient``. This service only adds the user's key and the clock.
 
 The node side of the directory is ``DirectoryService``; this is the client side.
+
+Logs (see ``docs/logging.md``), once per publication:
+
+* ``presence.published`` (DEBUG: it happens every ~10 s) with the ``version``
+  and ``expires_in_ms``, how long the new presence lasts;
+* ``presence.renew_failed`` (WARNING) with the ``version`` that was not
+  accepted and ``expires_in_ms``, how long the PREVIOUS presence still lasts
+  (0: the user already looks offline).
+
 Depends only on ports, other use cases and the domain: no Ray, no SQLite.
 """
 
@@ -19,6 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.use_cases.directory import DEFAULT_MAX_LEASE_MS
@@ -29,6 +39,8 @@ from source.domain.directory import build_record
 from source.domain.identifiers import UserId
 from source.domain.presence import next_version, renewal_due
 from source.domain.records import DirectoryRecord
+
+log = get_logger(__name__)
 
 DEFAULT_LEASE_MS = 30_000  # a presence lasts 30 s unless renewed
 DEFAULT_RENEW_MARGIN_MS = 20_000  # renew when 20 s are left: about every 10 s
@@ -108,6 +120,16 @@ class DirectoryClient:
         result = self._quorum.publish_record(record)
         if result.accepted:
             self._online_until_ms = record.expires_at_ms
+            log.debug(
+                "presence.published",
+                version=version,
+                expires_in_ms=record.expires_at_ms - now,
+            )
+        else:
+            left = 0 if self._online_until_ms is None else self._online_until_ms - now
+            log.warning(
+                "presence.renew_failed", version=version, expires_in_ms=max(left, 0)
+            )
         return PublishAttempt(record=record, result=result)
 
     def renew_if_due(self) -> PublishAttempt | None:
