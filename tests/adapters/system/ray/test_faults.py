@@ -73,10 +73,10 @@ def cluster(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[RunningC
         {
             "namespace": namespace,
             "data_dir": "state",
+            "log_dir": "logs",
             "nodes": NODES,
             "clients": [
-                {"id": c, "options": client_options(tmp_path / "logs")}
-                for c in ("alice", "bob")
+                {"id": c, "options": client_options()} for c in ("alice", "bob")
             ],
         },
         tmp_path,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, TypeVar
 
 import ray
@@ -17,9 +16,9 @@ WAIT_S = 60
 T = TypeVar("T")
 
 
-def client_options(log_dir: Path) -> dict[str, Any]:
+def client_options() -> dict[str, Any]:
     """Options of a launched client for tests: cheap password key, fast loop."""
-    return {"kdf": "fast", "tick_interval_ms": 200, "log_dir": str(log_dir)}
+    return {"kdf": "fast", "tick_interval_ms": 200}
 
 
 def call(handle: Any, method: str, *args: Any) -> Any:

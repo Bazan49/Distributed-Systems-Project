@@ -63,10 +63,11 @@ def namespace(request: pytest.FixtureRequest) -> str:
 
 
 def make_config(tmp_path: Path, namespace: str, **overrides: Any) -> LaunchConfig:
-    options = client_options(tmp_path / "logs")
+    options = client_options()
     raw: dict[str, Any] = {
         "namespace": namespace,
         "data_dir": "state",
+        "log_dir": "logs",
         "nodes": NODES,
         "seeds": ["node-1"],
         "clients": [
@@ -221,7 +222,7 @@ def test_if_a_client_fails_to_start_everything_is_stopped(
         tmp_path,
         namespace,
         clients=[
-            {"id": "alice", "options": client_options(tmp_path / "logs")},
+            {"id": "alice", "options": client_options()},
             {"id": "bob", "options": {"kdf": "slow"}},
         ],
     )
@@ -285,10 +286,10 @@ def test_one_command_starts_3_nodes_and_2_clients_and_stops_them(
             {
                 "namespace": namespace,
                 "data_dir": "state",
+                "log_dir": "logs",
                 "nodes": NODES,
                 "clients": [
-                    {"id": c, "options": client_options(tmp_path / "logs")}
-                    for c in ("alice", "bob")
+                    {"id": c, "options": client_options()} for c in ("alice", "bob")
                 ],
             }
         ),

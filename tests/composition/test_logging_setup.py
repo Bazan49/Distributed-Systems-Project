@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from source.application.observability import get_logger, log_context
 from source.composition.logging_setup import (
     DIR_ENV_VAR,
     LEVEL_ENV_VAR,
+    LogSetup,
     configure_logging,
 )
 
@@ -125,3 +127,27 @@ def test_the_folder_can_come_from_the_environment(
     monkeypatch.setenv(DIR_ENV_VAR, str(tmp_path / "shared"))
     path = configure_logging(process="node-1")
     assert path == tmp_path / "shared" / "node-1.jsonl"
+
+
+# ---------------- LogSetup: configure_logging for another process ----------------
+def test_log_setup_configures_this_process_like_configure_logging(
+    tmp_path: Path,
+) -> None:
+    setup = LogSetup(
+        process="node-7",
+        log_dir=str(tmp_path),
+        level="DEBUG",
+        context=(("node", "node-7"),),
+    )
+    path = setup()
+    get_logger("test").debug("probe.logged", n=1)
+
+    assert path == tmp_path / "node-7.jsonl"
+    lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+    assert [x["event"] for x in lines] == ["logging.configured", "probe.logged"]
+    assert all(x["node"] == "node-7" and x["process"] == "node-7" for x in lines)
+
+
+def test_log_setup_is_plain_picklable_data() -> None:
+    setup = LogSetup(process="node-7", log_dir="/abs/logs", context=(("node", "n"),))
+    assert pickle.loads(pickle.dumps(setup)) == setup  # noqa: S301 - our own bytes

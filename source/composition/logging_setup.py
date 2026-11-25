@@ -21,6 +21,10 @@ The folder comes from the argument, else from ``P08_LOG_DIR``, else
 from ``P08_LOG_LEVEL``, else ``INFO``. The environment variables exist for
 Ray: a launcher sets them once (``runtime_env={"env_vars": {...}}``) and
 every actor process picks them up, with an ABSOLUTE folder shared by all.
+
+``LogSetup`` is the same call packed as a picklable object: the launcher
+gives it to an actor (a service node), and the actor runs it first thing in
+its ``__init__``, in its own process, and again after every restart.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import logging
 import os
 import re
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 
 from source.adapters.system.json_logs import JsonLinesFormatter
@@ -39,6 +44,7 @@ __all__ = [
     "DIR_ENV_VAR",
     "LEVELS",
     "LEVEL_ENV_VAR",
+    "LogSetup",
     "configure_logging",
 ]
 
@@ -106,3 +112,32 @@ def configure_logging(
     set_process_context(process=process, run=secrets.token_hex(4), **context)
     log.info("logging.configured", log_level=chosen, file=str(path))
     return path
+
+
+@dataclass(frozen=True)
+class LogSetup:
+    """``configure_logging`` for ANOTHER process, e.g. a Ray actor.
+
+    Plain, picklable data: Ray ships it to the actor, which calls it in its
+    ``__init__``. Give it an ABSOLUTE ``log_dir``: the actor may run with
+    another current directory.
+
+    Attributes:
+        process: names the file and the ``process`` field.
+        log_dir: folder of the log file; None = ``P08_LOG_DIR`` or ``logs``.
+        level: None = ``P08_LOG_LEVEL`` or ``INFO``.
+        context: extra fields of every event of the process (``node=...``).
+    """
+
+    process: str
+    log_dir: str | None = None
+    level: str | None = None
+    context: tuple[tuple[str, str], ...] = ()
+
+    def __call__(self) -> Path:
+        return configure_logging(
+            process=self.process,
+            log_dir=Path(self.log_dir) if self.log_dir is not None else None,
+            level=self.level,
+            **dict(self.context),
+        )

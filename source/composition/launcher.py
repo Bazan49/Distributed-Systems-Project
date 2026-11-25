@@ -20,7 +20,8 @@ Configuration file (JSON)
       "clients": [{"id": "alice"}, {"id": "bob", "options": {"kdf": "fast"}}],
       "client_factory": "source.composition.launcher:start_ray_device",
       "ray_address": null,
-      "pin_nodes": false
+      "pin_nodes": false,
+      "log_dir": "logs"
     }
 
 =================  ========  ===================================================
@@ -46,22 +47,34 @@ Key                Required  Meaning
 ``pin_nodes``      no        ``true``: node ``x`` only runs on the Ray machine
                              that offers the resource ``service-node-x``, the
                              one that holds its files (Docker). Default false.
+``log_dir``        no        Folder of every process's log, relative to the
+                             config file. Default: ``P08_LOG_DIR``, else
+                             ``logs`` in the current directory.
 =================  ========  ===================================================
+
+Logs
+====
+
+Every actor is its own process and writes ``<log_dir>/<process>.jsonl``
+(see ``docs/logging.md``): node ``x`` writes ``x.jsonl``, client ``y`` writes
+``client-y.jsonl``. The launcher gives every process the same ABSOLUTE
+folder. The clients read the level (``P08_LOG_LEVEL``) from their
+environment, which a local Ray started by the launcher inherits.
 
 Clients
 =======
 
 The launcher calls the client factory once per client::
 
-    factory(client_id, data_dir, *, seeds=[...], namespace="...", **options)
+    factory(client_id, data_dir, *, seeds=[...], namespace="...", log_dir="...",
+            **options)
         -> Ray actor handle, registered as client_actor_name(client_id)
 
 The default, ``start_ray_device``, starts the real client actor
 (``ClientHost`` over ``ClientApp``): a device called ``client_id`` whose
 SQLite store is ``<data_dir>/<client_id>.db``. Its options are ``kdf``
-(``"secure"``, the default, or ``"fast"``, only for tests),
-``tick_interval_ms`` (how often its loop runs) and ``log_dir`` (folder of its
-log; default ``P08_LOG_DIR`` or ``logs/``). The device starts logged out:
+(``"secure"``, the default, or ``"fast"``, only for tests) and
+``tick_interval_ms`` (how often its loop runs). The device starts logged out:
 whoever drives it calls ``register`` (first time) or ``login``.
 """
 
@@ -71,6 +84,7 @@ import argparse
 import contextlib
 import importlib
 import json
+import os
 import re
 import signal
 import sys
@@ -90,6 +104,7 @@ from source.adapters.system.ray.ray_client import (
 )
 from source.adapters.system.ray_node import node_resource, start_service_node
 from source.composition.client import ClientSettings, KdfStrength
+from source.composition.logging_setup import DEFAULT_LOG_DIR, DIR_ENV_VAR
 from source.composition.ray_network import start_ray_client
 from source.domain.node_id import NodeId
 
@@ -110,6 +125,7 @@ _KEYS = {
     "client_factory",
     "ray_address",
     "pin_nodes",
+    "log_dir",
 }
 
 ClientFactory = Callable[..., Any]
@@ -145,6 +161,12 @@ class LaunchConfig:
     client_factory: str
     ray_address: str | None
     pin_nodes: bool = False
+    log_dir: Path | None = None  # None: P08_LOG_DIR, else ./logs
+
+    def logs_dir(self) -> Path:
+        """The ABSOLUTE folder of every process's log (actors may run elsewhere)."""
+        chosen = self.log_dir or Path(os.environ.get(DIR_ENV_VAR) or DEFAULT_LOG_DIR)
+        return chosen.resolve()
 
     def node_dir(self) -> Path:
         return self.data_dir / "nodes"
@@ -221,6 +243,10 @@ def parse_config(raw: Any, base_dir: Path) -> LaunchConfig:
     pin_nodes = raw.get("pin_nodes", False)
     if not isinstance(pin_nodes, bool):
         raise ConfigError("pin_nodes must be true or false")
+    log_dir = None
+    if "log_dir" in raw:
+        log_dir = Path(_str(raw["log_dir"], "log_dir"))
+        log_dir = log_dir if log_dir.is_absolute() else base_dir / log_dir
     return LaunchConfig(
         nodes=nodes,
         seeds=seeds,
@@ -230,6 +256,7 @@ def parse_config(raw: Any, base_dir: Path) -> LaunchConfig:
         client_factory=factory,
         ray_address=address,
         pin_nodes=pin_nodes,
+        log_dir=log_dir,
     )
 
 
@@ -300,6 +327,7 @@ def start_client(config: LaunchConfig, spec: ClientSpec, factory: ClientFactory)
         str(config.client_dir(spec.client_id)),
         seeds=[s.value for s in config.seeds],
         namespace=config.namespace,
+        log_dir=str(config.logs_dir()),
         **spec.options,
     )
 
@@ -310,17 +338,18 @@ def start_ray_device(
     *,
     seeds: Sequence[str],
     namespace: str,
+    log_dir: str | None = None,
     **options: Any,
 ) -> Any:
     """The default client factory: the real client actor of device ``client_id``.
 
     Its store is ``<data_dir>/<client_id>.db``. Options: ``kdf`` (``"secure"``
-    or ``"fast"``), ``tick_interval_ms`` and ``log_dir``.
+    or ``"fast"``) and ``tick_interval_ms``. Its log goes to ``log_dir``.
 
     Raises:
         LaunchError: an unknown option or a wrong value.
     """
-    unknown = set(options) - {"kdf", "tick_interval_ms", "log_dir"}
+    unknown = set(options) - {"kdf", "tick_interval_ms"}
     if unknown:
         raise LaunchError(f"unknown options for client {client_id}: {sorted(unknown)}")
     try:
@@ -330,9 +359,6 @@ def start_ray_device(
     tick = options.get("tick_interval_ms", DEFAULT_TICK_INTERVAL_MS)
     if isinstance(tick, bool) or not isinstance(tick, int) or tick < 1:
         raise LaunchError(f"tick_interval_ms of client {client_id} must be >= 1")
-    log_dir = options.get("log_dir")
-    if log_dir is not None and (not isinstance(log_dir, str) or not log_dir):
-        raise LaunchError(f"log_dir of client {client_id} must be a folder name")
     return start_ray_client(
         client_id,
         seeds,
@@ -399,6 +425,9 @@ def launch(
         resolve_factory(config.client_factory) if config.clients else _no_clients
     )
     if not ray.is_initialized():
+        # No runtime_env: the folder travels explicitly (the factory's
+        # log_dir), and a runtime_env needs Ray's runtime-env agent, which
+        # keeps every actor from starting when it is missing.
         ray.init(
             address=config.ray_address,
             namespace=config.namespace,
