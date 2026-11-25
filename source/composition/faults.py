@@ -228,8 +228,10 @@ def reconnect_client(
 ) -> None:
     """Bring an offline client back, with the same arguments and the same local data.
 
-    The client actor (task 2.5) collects its mailbox when it connects, so the
-    messages sent while it was offline arrive now. Returns when it is ready.
+    The real client actor comes back LOGGED OUT (its password is not kept):
+    the test calls ``login`` on it, and its first tick after logging in
+    collects the mailbox, so the messages sent while it was offline arrive
+    then. Returns when the actor is ready.
 
     Raises:
         FaultError: not a client of the cluster, already online, or not ready

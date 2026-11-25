@@ -17,8 +17,8 @@ Configuration file (JSON)
       "data_dir": "data/cluster",
       "nodes": ["node-1", "node-2", "node-3"],
       "seeds": ["node-1"],
-      "clients": [{"id": "alice"}, {"id": "bob", "options": {"alias": "Bob"}}],
-      "client_factory": "source.adapters.system.ray_client:start_client_actor",
+      "clients": [{"id": "alice"}, {"id": "bob", "options": {"kdf": "fast"}}],
+      "client_factory": "source.composition.launcher:start_ray_device",
       "ray_address": null,
       "pin_nodes": false
     }
@@ -34,10 +34,12 @@ Key                Required  Meaning
                              ``<data_dir>/clients/y/``.
 ``seeds``          no        Initial nodes the clients are told about (default:
                              every node). Must be nodes of the list.
-``clients``        no        Clients to start: ``id`` and optional ``options``
-                             (passed as is to the client factory).
+``clients``        no        Clients to start: ``id`` (1 to 32 of ``a-z``,
+                             ``0-9``, ``-``) and optional ``options`` (passed
+                             as is to the client factory).
 ``client_factory`` no        ``module:function`` that starts ONE client actor
-                             (see below). Default: the client actor of task 2.5.
+                             (see below). Default: ``start_ray_device``, the
+                             real client actor.
 ``ray_address``    no        Address of an existing Ray cluster; ``null`` starts
                              a local one, ``"auto"`` joins the one this
                              machine belongs to (Docker).
@@ -46,6 +48,21 @@ Key                Required  Meaning
                              one that holds its files (Docker). Default false.
 =================  ========  ===================================================
 
+Clients
+=======
+
+The launcher calls the client factory once per client::
+
+    factory(client_id, data_dir, *, seeds=[...], namespace="...", **options)
+        -> Ray actor handle, registered as client_actor_name(client_id)
+
+The default, ``start_ray_device``, starts the real client actor
+(``ClientHost`` over ``ClientApp``): a device called ``client_id`` whose
+SQLite store is ``<data_dir>/<client_id>.db``. Its options are ``kdf``
+(``"secure"``, the default, or ``"fast"``, only for tests),
+``tick_interval_ms`` (how often its loop runs) and ``log_dir`` (folder of its
+log; default ``P08_LOG_DIR`` or ``logs/``). The device starts logged out:
+whoever drives it calls ``register`` (first time) or ``login``.
 """
 
 from __future__ import annotations
@@ -66,17 +83,24 @@ from typing import Any
 import ray
 from ray.exceptions import GetTimeoutError, RayError
 
+from source.adapters.system.ray.ray_client import (
+    DEFAULT_TICK_INTERVAL_MS,
+    DEVICE_ACTOR_PREFIX,
+    device_actor_name,
+)
 from source.adapters.system.ray_node import node_resource, start_service_node
+from source.composition.client import ClientSettings, KdfStrength
+from source.composition.ray_network import start_ray_client
 from source.domain.node_id import NodeId
 
 DEFAULT_NAMESPACE = "mensajeria"
 DEFAULT_DATA_DIR = "data"
-DEFAULT_CLIENT_FACTORY = "source.adapters.system.ray_client:start_client_actor"
-CLIENT_ACTOR_PREFIX = "cliente-"
+DEFAULT_CLIENT_FACTORY = "source.composition.launcher:start_ray_device"
+CLIENT_ACTOR_PREFIX = DEVICE_ACTOR_PREFIX
 DEFAULT_READY_TIMEOUT_MS = 60_000
 DEFAULT_STOP_TIMEOUT_MS = 5_000
 
-_CLIENT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+_CLIENT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")  # also a valid device name
 _KEYS = {
     "namespace",
     "data_dir",
@@ -100,8 +124,8 @@ class LaunchError(RuntimeError):
 
 
 def client_actor_name(client_id: str) -> str:
-    """Name of the actor of a client."""
-    return f"{CLIENT_ACTOR_PREFIX}{client_id}"
+    """Name of the actor of a client: the client actor's device name."""
+    return device_actor_name(client_id)
 
 
 # ============================ configuration ============================
@@ -157,7 +181,7 @@ def _clients(value: Any) -> tuple[ClientSpec, ...]:
         client_id = entry.get("id")
         if not isinstance(client_id, str) or not _CLIENT_ID.fullmatch(client_id):
             raise ConfigError(
-                f"client id {client_id!r} must match [a-z0-9][a-z0-9-]{{0,62}}"
+                f"client id {client_id!r} must match [a-z0-9][a-z0-9-]{{0,31}}"
             )
         options = entry.get("options", {})
         if not isinstance(options, dict):
@@ -229,17 +253,13 @@ def resolve_factory(spec: str) -> ClientFactory:
     """Import ``module:function``.
 
     Raises:
-        LaunchError: the module or the function does not exist (for the
-            default factory: task 2.5 is not merged yet).
+        LaunchError: the module or the function does not exist.
     """
     module_name, _, function_name = spec.partition(":")
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        raise LaunchError(
-            f"cannot import the client factory {spec!r} ({exc}); "
-            "is the client actor (task 2.5) available?"
-        ) from exc
+        raise LaunchError(f"cannot import the client factory {spec!r} ({exc})") from exc
     factory = getattr(module, function_name, None)
     if not callable(factory):
         raise LaunchError(f"{spec!r} is not a function")
@@ -281,6 +301,45 @@ def start_client(config: LaunchConfig, spec: ClientSpec, factory: ClientFactory)
         seeds=[s.value for s in config.seeds],
         namespace=config.namespace,
         **spec.options,
+    )
+
+
+def start_ray_device(
+    client_id: str,
+    data_dir: str,
+    *,
+    seeds: Sequence[str],
+    namespace: str,
+    **options: Any,
+) -> Any:
+    """The default client factory: the real client actor of device ``client_id``.
+
+    Its store is ``<data_dir>/<client_id>.db``. Options: ``kdf`` (``"secure"``
+    or ``"fast"``), ``tick_interval_ms`` and ``log_dir``.
+
+    Raises:
+        LaunchError: an unknown option or a wrong value.
+    """
+    unknown = set(options) - {"kdf", "tick_interval_ms", "log_dir"}
+    if unknown:
+        raise LaunchError(f"unknown options for client {client_id}: {sorted(unknown)}")
+    try:
+        kdf = KdfStrength(options.get("kdf", KdfStrength.SECURE.value))
+    except ValueError as exc:
+        raise LaunchError(f"kdf of client {client_id} must be secure or fast") from exc
+    tick = options.get("tick_interval_ms", DEFAULT_TICK_INTERVAL_MS)
+    if isinstance(tick, bool) or not isinstance(tick, int) or tick < 1:
+        raise LaunchError(f"tick_interval_ms of client {client_id} must be >= 1")
+    log_dir = options.get("log_dir")
+    if log_dir is not None and (not isinstance(log_dir, str) or not log_dir):
+        raise LaunchError(f"log_dir of client {client_id} must be a folder name")
+    return start_ray_client(
+        client_id,
+        seeds,
+        namespace=namespace,
+        settings=ClientSettings(data_dir=Path(data_dir), kdf=kdf),
+        log_dir=Path(log_dir) if log_dir is not None else None,
+        tick_interval_ms=tick,
     )
 
 
@@ -329,17 +388,14 @@ class RunningCluster:
 def launch(
     config: LaunchConfig,
     *,
-    client_factory: ClientFactory | None = None,
     ready_timeout_ms: int = DEFAULT_READY_TIMEOUT_MS,
 ) -> RunningCluster:
     """Start every node, wait until they are up, then every client.
 
     All or nothing: if anything fails, whatever was started is stopped again
     and ``LaunchError`` is raised. Connects to Ray if it is not connected yet.
-
-    ``client_factory`` overrides ``config.client_factory`` (tests).
     """
-    factory: ClientFactory = client_factory or (
+    factory: ClientFactory = (
         resolve_factory(config.client_factory) if config.clients else _no_clients
     )
     if not ray.is_initialized():
