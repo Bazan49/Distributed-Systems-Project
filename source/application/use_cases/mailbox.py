@@ -23,7 +23,9 @@ Logs (see ``docs/logging.md``), where each decision is taken:
 * ``mailbox.deposited`` (DEBUG) with the ``msg`` and ``outcome`` (``stored``
   or ``already_present``: each message arrives about 3 times by design);
 * ``mailbox.collected`` / ``mailbox.acknowledged`` (DEBUG) with the ``user``
-  and how many envelopes (``count``).
+  and how many envelopes (``count``);
+* ``mailbox.request_refused`` (WARNING) with the ``user`` the request claims
+  to be and the ``reason`` (an ``AccessDenial``).
 
 It depends only on ports (store, crypto, clock) and the domain: no Ray, no SQLite.
 """
@@ -151,19 +153,29 @@ class MailboxService:
         return self._store.purge_expired(self._clock.now_ms())
 
     def _authorize(self, request: MailboxRequest, action: MailboxAction) -> None:
+        """Let the request through, or log and raise why it is refused."""
+        denial = self._denial(request, action)
+        if denial is not None:
+            log.warning("mailbox.request_refused", user=request.receiver, reason=denial)
+            raise MailboxAccessDenied(denial)
+
+    def _denial(
+        self, request: MailboxRequest, action: MailboxAction
+    ) -> AccessDenial | None:
         """Cheap checks first; the nonce is only consumed by an authentic request."""
         if request.action is not action:
-            raise MailboxAccessDenied(AccessDenial.WRONG_ACTION)
+            return AccessDenial.WRONG_ACTION
         now = self._clock.now_ms()
         if not self._replays.is_fresh(request.issued_at_ms, now):
-            raise MailboxAccessDenied(AccessDenial.STALE)
+            return AccessDenial.STALE
         if not request.identity_matches():
-            raise MailboxAccessDenied(AccessDenial.BAD_IDENTITY)
+            return AccessDenial.BAD_IDENTITY
         if not self._crypto.verify(
             request.public_key, request.signing_bytes(), request.signature
         ):
-            raise MailboxAccessDenied(AccessDenial.INVALID_SIGNATURE)
+            return AccessDenial.INVALID_SIGNATURE
         if not self._replays.check_and_remember(
             request.nonce, request.issued_at_ms, now
         ):
-            raise MailboxAccessDenied(AccessDenial.REPLAYED)
+            return AccessDenial.REPLAYED
+        return None

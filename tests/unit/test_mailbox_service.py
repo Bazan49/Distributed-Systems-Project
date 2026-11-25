@@ -33,7 +33,7 @@ from tests.support.builders import (
     collect_request,
     signed_by,
 )
-from tests.support.logs import events, has_event
+from tests.support.logs import event_names, events, has_event
 
 
 class Mailbox:
@@ -376,3 +376,21 @@ def test_collect_and_acknowledge_are_logged_with_a_count(
     box.acknowledge(BOB, [envs[0].message_id])
     assert has_event(caplog, "mailbox.collected", user=BOB.user_id, count=2)
     assert has_event(caplog, "mailbox.acknowledged", user=BOB.user_id, count=1)
+
+
+def test_a_refused_request_is_a_warning_with_the_reason(
+    box: Mailbox, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    request = collect_request(BOB, clock.now_ms())
+    box.service.collect(request)
+    with denied(AccessDenial.REPLAYED):
+        box.service.collect(request)  # the same request again
+    assert event_names(caplog) == ["mailbox.collected", "mailbox.request_refused"]
+    assert has_event(
+        caplog,
+        "mailbox.request_refused",
+        user=BOB.user_id,
+        reason=AccessDenial.REPLAYED,
+    )
+    assert caplog.records[-1].levelno == logging.WARNING

@@ -310,7 +310,7 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 | `record.accepted` / `record.rejected` | DEBUG / WARNING | `user`, `version` (solo si tienen el tipo correcto), y `outcome` (`stored`/`unchanged`) o `reason` (`rejected_malformed`, `rejected_expired`, `rejected_invalid_signature`, `rejected_stale`…) | `DirectoryService.publish` (nodo) | ✅ |
 | `mailbox.deposited` | DEBUG | `msg`, `outcome` (`stored`/`already_present`) | `MailboxService` (nodo) | ✅ |
 | `mailbox.collected` / `mailbox.acknowledged` | DEBUG | `user`, `count` | `MailboxService` (nodo) | ✅ |
-| `mailbox.request_refused` | WARNING | `user`, `reason` (`replay`, `bad_signature`, `stale`) | `MailboxService` (nodo) | ⏳ |
+| `mailbox.request_refused` | WARNING | `user`, `reason` (`replayed`, `invalid_signature`, `stale`, `bad_identity`, `wrong_action`) | `MailboxService` (nodo) | ✅ |
 | `actor.started` / `actor.restarted` | INFO / WARNING | `node` | Adaptadores de Ray | ⏳ |
 | `actor.call_timeout` | WARNING | `node`, `method`, `timeout_ms` | Gateway de Ray | ⏳ |
 
