@@ -328,7 +328,7 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 | `mailbox.collected` / `mailbox.acknowledged` | DEBUG | `user`, `count` | `MailboxService` (nodo) | ✅ |
 | `mailbox.request_refused` | WARNING | `user`, `reason` (`replayed`, `invalid_signature`, `stale`, `bad_identity`, `wrong_action`) | `MailboxService` (nodo) | ✅ |
 | `actor.started` / `actor.restarted` | INFO / WARNING | `node` | `ServiceNode.__init__` (actor del nodo) | ✅ |
-| `actor.call_timeout` | WARNING | `node`, `method`, `timeout_ms` | Gateway de Ray | ⏳ |
+| `actor.call_timeout` | WARNING | `node`, `method`, `timeout_ms` | `RayNodeGateway`, por cada nodo que no respondió a tiempo | ✅ |
 
 ### Infraestructura e interfaz (ya implementados)
 

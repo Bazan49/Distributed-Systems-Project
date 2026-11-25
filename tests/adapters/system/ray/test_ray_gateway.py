@@ -9,6 +9,7 @@ Plus what the contract cannot see: calls with a deadline, returning with 2 of
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 from collections.abc import Iterator
@@ -31,6 +32,7 @@ from source.domain.records import NodeReply
 from tests.contracts.mailbox_store_contract import make_envelope
 from tests.contracts.node_gateway_contract import GatewayHarness, NodeGatewayContract
 from tests.support.builders import BOB, collect_request, make_outgoing
+from tests.support.logs import has_event
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("ray_cluster")]
 
@@ -209,12 +211,30 @@ def fake_node() -> Iterator[Any]:
         ray.kill(handle, no_restart=True)
 
 
-def test_a_slow_node_becomes_a_timeout_within_the_deadline(fake_node: Any) -> None:
+def test_a_slow_node_becomes_a_timeout_within_the_deadline(
+    fake_node: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
     node, gateway = fake_node("slow")
     started = time.monotonic()
     [reply] = gateway.ping([node], 300)
     assert time.monotonic() - started < 5  # did not wait the 10 s of the node
     assert not reply.ok and not reply.refused and reply.error == "timeout"
+    assert has_event(
+        caplog, "actor.call_timeout", node=node, method="ping", timeout_ms=300
+    )
+    [record] = [r for r in caplog.records if r.getMessage() == "actor.call_timeout"]
+    assert record.levelno == logging.WARNING
+
+
+def test_a_node_that_answers_in_time_logs_no_timeout(
+    fake_node: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    node, gateway = fake_node("honest")
+    [reply] = gateway.ping([node], TIMEOUT_MS)
+    assert reply.ok
+    assert not has_event(caplog, "actor.call_timeout")
 
 
 def test_an_error_inside_the_actor_is_a_failed_node_not_an_exception(
