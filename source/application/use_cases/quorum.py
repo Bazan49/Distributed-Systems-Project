@@ -14,10 +14,14 @@ answer, updates the ``MembershipService`` (a node that refused a request is
 alive; only a node that did not answer is reported as failing).
 
 Logs (see ``docs/logging.md``): every write (deposit or publish) emits ONE
-``quorum.write`` event at DEBUG, with the nodes asked, the nodes that
-confirmed and whether the quorum was reached. DEBUG because it happens on
-every send and every presence renewal: it is detail for debugging, and the
-callers log what the write MEANS (for example ``delivery.mailbox_accepted``).
+event, where the quorum is decided, with the nodes asked and the nodes that
+confirmed:
+
+* ``quorum.write`` at DEBUG when the quorum was reached. It happens on every
+  send and every presence renewal: detail for debugging. The callers log
+  what the write MEANS (for example ``delivery.mailbox_accepted``).
+* ``quorum.write_failed`` at WARNING when it was not: anomalous, but handled
+  (the message stays queued, the presence is renewed again).
 
 Depends only on ports, other use cases and the domain: no Ray, no SQLite.
 """
@@ -282,14 +286,17 @@ class QuorumClient:
         # A deposit is identified by its message, a publish by its user: the
         # standard field names "msg" and "user" (the formatter shortens "user").
         subject_field = "msg" if kind is WriteKind.DEPOSIT else "user"
-        log.debug(
-            "quorum.write",
-            kind=kind,
-            **{subject_field: subject},
-            asked=result.asked,
-            confirmed_by=result.confirmed_by,
-            outcome=result.outcome,
-        )
+        fields = {
+            "kind": kind,
+            subject_field: subject,
+            "asked": result.asked,
+            "confirmed_by": result.confirmed_by,
+            "outcome": result.outcome,
+        }
+        if result.accepted:
+            log.debug("quorum.write", **fields)
+        else:
+            log.warning("quorum.write_failed", **fields)
         return result
 
     def _observe(self, replies: Sequence[NodeReply[object]]) -> None:

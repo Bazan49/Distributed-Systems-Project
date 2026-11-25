@@ -420,7 +420,7 @@ def test_invalid_policies_are_rejected(kwargs: dict[str, object]) -> None:
         QuorumPolicy(**kwargs)
 
 
-# ================= logs: quorum.write (docs/logging.md) =================
+# ======== logs: quorum.write / quorum.write_failed (docs/logging.md) ========
 @pytest.fixture
 def debug_logs(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
     caplog.set_level(logging.DEBUG, logger="p08")
@@ -444,7 +444,7 @@ def test_an_accepted_deposit_is_logged_with_its_nodes(
     )
 
 
-def test_a_deposit_without_quorum_is_logged_as_no_quorum(
+def test_a_deposit_without_quorum_is_a_warning_with_the_same_fields(
     cluster: Cluster, debug_logs: pytest.LogCaptureFixture
 ) -> None:
     for node in cluster.ranked_for(BOB.user_id)[:2]:
@@ -453,10 +453,31 @@ def test_a_deposit_without_quorum_is_logged_as_no_quorum(
 
     cluster.client.deposit(envelope)
 
-    [(_, fields)] = [e for e in events(debug_logs) if e[0] == "quorum.write"]
+    [(name, fields)] = [e for e in events(debug_logs) if e[0].startswith("quorum.")]
+    assert name == "quorum.write_failed"  # never ALSO quorum.write
+    assert fields["kind"] is WriteKind.DEPOSIT
+    assert fields["msg"] == envelope.message_id
     assert fields["outcome"] is WriteOutcome.NO_QUORUM
     assert len(fields["asked"]) == 3
     assert len(fields["confirmed_by"]) == 1
+    [record] = [r for r in debug_logs.records if r.getMessage() == name]
+    assert record.levelno == logging.WARNING
+
+
+def test_a_publish_without_quorum_is_a_warning_too(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    for node in THREE[:2]:
+        cluster.gateway.set_down(node)
+    cluster.client.publish_record(signed_record(ALICE, cluster.clock.now_ms()))
+    assert has_event(
+        debug_logs,
+        "quorum.write_failed",
+        kind=WriteKind.PUBLISH,
+        user=ALICE.user_id,
+        outcome=WriteOutcome.NO_QUORUM,
+    )
+    assert "quorum.write" not in event_names(debug_logs)
 
 
 def test_a_publish_is_logged_with_the_user_not_a_message(
@@ -479,7 +500,7 @@ def test_a_write_with_no_live_node_is_still_logged(
         cluster.declare_dead(node)
     cluster.client.deposit(make_outgoing().envelope)
     assert has_event(
-        debug_logs, "quorum.write", asked=(), outcome=WriteOutcome.NO_QUORUM
+        debug_logs, "quorum.write_failed", asked=(), outcome=WriteOutcome.NO_QUORUM
     )
 
 
