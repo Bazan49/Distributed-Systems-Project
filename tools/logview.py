@@ -75,16 +75,30 @@ def keep(event: dict[str, object], args: argparse.Namespace) -> bool:
         str(event.get("event", "")).startswith(e) for e in args.event
     ):
         return False
-    who = str(event.get("client") or event.get("node") or event.get("process") or "")
-    return not (args.who and not who.startswith(args.who))
+    return not (args.who and not _who(event, "").startswith(args.who))
 
 
 def render(event: dict[str, object]) -> str:
     time = str(event.get("ts", ""))[11:23]
     level = str(event.get("level", ""))[:4]
-    who = str(event.get("client") or event.get("node") or event.get("process") or "-")
-    fields = " ".join(f"{k}={_value(v)}" for k, v in event.items() if k not in _HIDDEN)
+    who = _who(event, "-")
+    fields = " ".join(
+        f"{k}={_value(v)}"
+        for k, v in event.items()
+        if k not in _HIDDEN or (k == "node" and str(v) != who)  # a node it talks about
+    )
     return f"{time} {level:<4} {who:<10} {event.get('event', '')}  {fields}".rstrip()
+
+
+def _who(event: dict[str, object], default: str) -> str:
+    """Who emitted the event: the client of the call, else the process.
+
+    ``node`` comes last: it is also a FIELD of events about a node (a client
+    logs ``node.state_changed node=node-2``), so it does not always say who
+    is writing; ``process`` does.
+    """
+    who = event.get("client") or event.get("process") or event.get("node")
+    return str(who or default)
 
 
 def _value(value: object) -> str:
