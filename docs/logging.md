@@ -303,7 +303,7 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 
 | Evento | Nivel | Campos | Dónde | |
 |---|---|---|---|---|
-| `quorum.write` | DEBUG | `kind` (`deposit`/`publish`), `msg` o `user`, `asked`, `confirmed_by`, `outcome` | `QuorumClient` | ⏳ |
+| `quorum.write` | DEBUG | `kind` (`deposit`/`publish`), `msg` (deposit) o `user` (publish), `asked`, `confirmed_by`, `outcome` (`accepted`/`no_quorum`) | `QuorumClient` | ✅ |
 | `quorum.write_failed` | WARNING | ídem | `QuorumClient` | ⏳ |
 | `node.state_changed` | INFO / WARNING (si pasa a `dead`) | `node`, `from_state`, `to_state` | `MembershipService` | ⏳ |
 | `presence.published` / `presence.renew_failed` | DEBUG / WARNING | `version`, `expires_in_ms` | `DirectoryClient` | ⏳ |
