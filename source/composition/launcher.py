@@ -58,8 +58,9 @@ Logs
 Every actor is its own process and writes ``<log_dir>/<process>.jsonl``
 (see ``docs/logging.md``): node ``x`` writes ``x.jsonl``, client ``y`` writes
 ``client-y.jsonl``. The launcher gives every process the same ABSOLUTE
-folder. The clients read the level (``P08_LOG_LEVEL``) from their
-environment, which a local Ray started by the launcher inherits.
+folder. The nodes also get the launcher's ``P08_LOG_LEVEL`` (default
+``INFO``); the clients read it from their environment, which a local Ray
+started by the launcher inherits.
 
 Clients
 =======
@@ -104,7 +105,12 @@ from source.adapters.system.ray.ray_client import (
 )
 from source.adapters.system.ray_node import node_resource, start_service_node
 from source.composition.client import ClientSettings, KdfStrength
-from source.composition.logging_setup import DEFAULT_LOG_DIR, DIR_ENV_VAR
+from source.composition.logging_setup import (
+    DEFAULT_LOG_DIR,
+    DIR_ENV_VAR,
+    LEVEL_ENV_VAR,
+    LogSetup,
+)
 from source.composition.ray_network import start_ray_client
 from source.domain.node_id import NodeId
 
@@ -317,6 +323,12 @@ def start_node(config: LaunchConfig, node: NodeId) -> Any:
         config.node_dir(),
         namespace=config.namespace,
         resources={node_resource(node.value): 1} if config.pin_nodes else None,
+        log_setup=LogSetup(
+            process=node.value,
+            log_dir=str(config.logs_dir()),
+            level=os.environ.get(LEVEL_ENV_VAR),
+            context=(("node", node.value),),
+        ),
     )
 
 
@@ -425,9 +437,9 @@ def launch(
         resolve_factory(config.client_factory) if config.clients else _no_clients
     )
     if not ray.is_initialized():
-        # No runtime_env: the folder travels explicitly (the factory's
-        # log_dir), and a runtime_env needs Ray's runtime-env agent, which
-        # keeps every actor from starting when it is missing.
+        # No runtime_env: the folder and the level travel explicitly (LogSetup,
+        # the factory's log_dir), and a runtime_env needs Ray's runtime-env
+        # agent, which keeps every actor from starting when it is missing.
         ray.init(
             address=config.ray_address,
             namespace=config.namespace,

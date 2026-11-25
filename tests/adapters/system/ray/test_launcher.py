@@ -142,6 +142,27 @@ def test_launched_clients_reach_the_nodes_and_each_other(
     assert received(call(bob, "history", a.user_id)) == ["hola, Bob"]
 
 
+def test_every_process_writes_its_own_log_in_the_log_folder(
+    running: RunningCluster,
+) -> None:
+    logs = running.config.logs_dir()
+
+    def events_in(name: str) -> list[str]:
+        path = logs / f"{name}.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line)["event"] for line in lines]
+
+    for node in NODES:
+        wait_until(lambda n=node: "actor.started" in events_in(n), f"{node} logs")
+    for client in ("alice", "bob"):
+        wait_until(
+            lambda c=client: "logging.configured" in events_in(f"client-{c}"),
+            f"{client} logs",
+        )
+
+
 def test_each_node_keeps_its_files_in_its_folder(running: RunningCluster) -> None:
     for node in NODES:
         assert (running.config.node_dir() / node / MAILBOX_DB).exists()

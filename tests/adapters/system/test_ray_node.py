@@ -7,6 +7,7 @@ arguments over the same folder.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ from tests.support.builders import (
     collect_request,
     signed_record,
 )
+from tests.support.logs import event_names, has_event
 
 
 @pytest.fixture
@@ -289,3 +291,33 @@ def test_list_nodes_leaves_out_peers_this_node_knows_are_dead(
     node.report_peer("node-3", answered=False)
     clock.advance(15_000)
     assert node.list_nodes().value == ["node-1", "node-2"]
+
+
+# ---------------- logs: actor.started (docs/logging.md) ----------------
+def test_the_log_setup_runs_first_and_the_start_is_logged(
+    tmp_path: Path, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    seen_before_setup: list[list[str]] = []
+
+    def setup() -> None:  # records what had been logged when it ran
+        seen_before_setup.append(event_names(caplog))
+
+    ServiceNode(
+        "node-1", str(tmp_path), crypto=FakeCrypto(), clock=clock, log_setup=setup
+    )
+
+    assert seen_before_setup == [[]]  # it ran once, before any event
+    assert has_event(caplog, "actor.started", node=NodeId("node-1"))
+    assert "actor.restarted" not in event_names(caplog)  # not a Ray restart
+
+
+def test_the_node_events_reach_the_log(
+    node: ServiceNode, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    envelope = make_envelope()
+    node.deposit(envelope.to_bytes())
+    assert has_event(
+        caplog, "mailbox.deposited", msg=envelope.message_id, outcome=PutOutcome.STORED
+    )
