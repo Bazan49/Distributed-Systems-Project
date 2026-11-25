@@ -21,7 +21,9 @@ by its sender and the receiver verifies it. Spam control is out of Phase 1.
 Logs (see ``docs/logging.md``), where each decision is taken:
 
 * ``mailbox.deposited`` (DEBUG) with the ``msg`` and ``outcome`` (``stored``
-  or ``already_present``: each message arrives about 3 times by design).
+  or ``already_present``: each message arrives about 3 times by design);
+* ``mailbox.collected`` / ``mailbox.acknowledged`` (DEBUG) with the ``user``
+  and how many envelopes (``count``).
 
 It depends only on ports (store, crypto, clock) and the domain: no Ray, no SQLite.
 """
@@ -125,7 +127,9 @@ class MailboxService:
         """
         self._authorize(request, MailboxAction.COLLECT)
         capped = min(request.limit, self._policy.max_fetch)
-        return self._store.fetch(request.receiver, capped, self._clock.now_ms())
+        found = self._store.fetch(request.receiver, capped, self._clock.now_ms())
+        log.debug("mailbox.collected", user=request.receiver, count=len(found))
+        return found
 
     def acknowledge(self, request: MailboxRequest) -> int:
         """Delete the confirmed envelopes of ``request.receiver``; return how many existed.
@@ -138,7 +142,9 @@ class MailboxService:
                 signed by the receiver.
         """
         self._authorize(request, MailboxAction.ACKNOWLEDGE)
-        return self._store.delete(request.receiver, list(request.message_ids))
+        removed = self._store.delete(request.receiver, list(request.message_ids))
+        log.debug("mailbox.acknowledged", user=request.receiver, count=removed)
+        return removed
 
     def purge_expired(self) -> int:
         """Physically remove every expired envelope; return how many."""

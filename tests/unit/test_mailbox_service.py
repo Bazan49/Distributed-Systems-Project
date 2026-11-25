@@ -33,7 +33,7 @@ from tests.support.builders import (
     collect_request,
     signed_by,
 )
-from tests.support.logs import events
+from tests.support.logs import events, has_event
 
 
 class Mailbox:
@@ -363,3 +363,16 @@ def test_deposits_are_logged_with_their_outcome(
         ),
     ]
     assert {r.levelno for r in caplog.records} == {logging.DEBUG}
+
+
+def test_collect_and_acknowledge_are_logged_with_a_count(
+    box: Mailbox, caplog: pytest.LogCaptureFixture
+) -> None:
+    envs = [make_envelope(), make_envelope()]
+    for env in envs:
+        box.deposit(env)
+    caplog.set_level(logging.DEBUG, logger="p08")
+    box.collect(BOB)
+    box.acknowledge(BOB, [envs[0].message_id])
+    assert has_event(caplog, "mailbox.collected", user=BOB.user_id, count=2)
+    assert has_event(caplog, "mailbox.acknowledged", user=BOB.user_id, count=1)
