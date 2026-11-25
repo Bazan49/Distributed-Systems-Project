@@ -7,6 +7,8 @@ stays in the send queue.
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
@@ -16,8 +18,14 @@ from source.adapters.memory.clock import ManualClock
 from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.memory.local_store import MemoryLocalStore
 from source.adapters.memory.node_gateway import InMemoryNodeGateway
+from source.adapters.system.json_logs import JsonLinesFormatter
 from source.application.use_cases.membership import MembershipService
-from source.application.use_cases.quorum import QuorumClient, QuorumPolicy
+from source.application.use_cases.quorum import (
+    QuorumClient,
+    QuorumPolicy,
+    WriteKind,
+    WriteOutcome,
+)
 from source.domain.envelope import Envelope
 from source.domain.identifiers import UserId
 from source.domain.membership import NodeState
@@ -33,6 +41,7 @@ from tests.support.builders import (
     make_outgoing,
     signed_record,
 )
+from tests.support.logs import event_names, events, has_event
 
 THREE = [NodeId("node-1"), NodeId("node-2"), NodeId("node-3")]
 FIVE = [NodeId(f"node-{i}") for i in range(1, 6)]
@@ -409,3 +418,130 @@ def test_refresh_membership_revives_a_dead_node_that_came_back(
 def test_invalid_policies_are_rejected(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         QuorumPolicy(**kwargs)
+
+
+# ======== logs: quorum.write / quorum.write_failed (docs/logging.md) ========
+@pytest.fixture
+def debug_logs(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    return caplog
+
+
+def test_an_accepted_deposit_is_logged_with_its_nodes(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    envelope = make_outgoing().envelope
+    result = cluster.client.deposit(envelope)
+
+    assert has_event(
+        debug_logs,
+        "quorum.write",
+        kind=WriteKind.DEPOSIT,
+        msg=envelope.message_id,
+        asked=result.asked,
+        confirmed_by=result.confirmed_by,
+        outcome=WriteOutcome.ACCEPTED,
+    )
+
+
+def test_a_deposit_without_quorum_is_a_warning_with_the_same_fields(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    for node in cluster.ranked_for(BOB.user_id)[:2]:
+        cluster.gateway.set_down(node)
+    envelope = make_outgoing().envelope
+
+    cluster.client.deposit(envelope)
+
+    [(name, fields)] = [e for e in events(debug_logs) if e[0].startswith("quorum.")]
+    assert name == "quorum.write_failed"  # never ALSO quorum.write
+    assert fields["kind"] is WriteKind.DEPOSIT
+    assert fields["msg"] == envelope.message_id
+    assert fields["outcome"] is WriteOutcome.NO_QUORUM
+    assert len(fields["asked"]) == 3
+    assert len(fields["confirmed_by"]) == 1
+    [record] = [r for r in debug_logs.records if r.getMessage() == name]
+    assert record.levelno == logging.WARNING
+
+
+def test_a_publish_without_quorum_is_a_warning_too(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    for node in THREE[:2]:
+        cluster.gateway.set_down(node)
+    cluster.client.publish_record(signed_record(ALICE, cluster.clock.now_ms()))
+    assert has_event(
+        debug_logs,
+        "quorum.write_failed",
+        kind=WriteKind.PUBLISH,
+        user=ALICE.user_id,
+        outcome=WriteOutcome.NO_QUORUM,
+    )
+    assert "quorum.write" not in event_names(debug_logs)
+
+
+def test_a_publish_is_logged_with_the_user_not_a_message(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    record = signed_record(ALICE, cluster.clock.now_ms())
+    cluster.client.publish_record(record)
+
+    [(_, fields)] = [e for e in events(debug_logs) if e[0] == "quorum.write"]
+    assert fields["kind"] is WriteKind.PUBLISH
+    assert fields["user"] == ALICE.user_id
+    assert "msg" not in fields
+    assert fields["outcome"] is WriteOutcome.ACCEPTED
+
+
+def test_a_write_with_no_live_node_is_still_logged(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    for node in THREE:
+        cluster.declare_dead(node)
+    cluster.client.deposit(make_outgoing().envelope)
+    assert has_event(
+        debug_logs, "quorum.write_failed", asked=(), outcome=WriteOutcome.NO_QUORUM
+    )
+
+
+def test_each_write_is_logged_once_and_reads_are_not(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    message = make_outgoing()
+    cluster.client.deposit_outgoing(message)  # goes through deposit(): one event
+    cluster.client.collect(collect_request(BOB, cluster.clock.now_ms()))
+    cluster.client.resolve(ALICE.user_id)
+    assert event_names(debug_logs).count("quorum.write") == 1
+
+
+def test_quorum_write_is_debug_and_hidden_at_info(
+    cluster: Cluster, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    cluster.client.deposit(make_outgoing().envelope)
+    [record] = [r for r in caplog.records if r.getMessage() == "quorum.write"]
+    assert record.levelno == logging.DEBUG
+
+    caplog.clear()
+    caplog.set_level(logging.INFO, logger="p08")
+    cluster.client.deposit(make_outgoing().envelope)
+    assert "quorum.write" not in event_names(caplog)
+
+
+def test_the_logged_line_is_private_and_readable(
+    cluster: Cluster, debug_logs: pytest.LogCaptureFixture
+) -> None:
+    record = signed_record(ALICE, cluster.clock.now_ms())
+    cluster.client.publish_record(record)
+    [line] = [
+        json.loads(JsonLinesFormatter().format(r))
+        for r in debug_logs.records
+        if r.getMessage() == "quorum.write"
+    ]
+    assert line["event"] == "quorum.write"
+    assert line["level"] == "DEBUG"
+    assert line["logger"] == "p08.quorum"
+    assert line["kind"] == "publish" and line["outcome"] == "accepted"
+    assert line["user"] == ALICE.user_id.value[:8]  # shortened, never the full id
+    assert ALICE.user_id.value not in json.dumps(line)
+    assert all(isinstance(n, str) for n in line["asked"] + line["confirmed_by"])

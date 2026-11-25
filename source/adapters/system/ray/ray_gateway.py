@@ -42,6 +42,12 @@ answer", which is what membership needs to know.
 Wire format: envelopes and mailbox requests travel as bytes and are rebuilt
 with ``from_bytes`` (strict validation), in both directions. The node is not
 trusted: every answer is checked before it is handed to the quorum logic.
+
+Logs (see ``docs/logging.md``): ``actor.call_timeout`` (WARNING) for each
+node that did not answer before the deadline, with the ``method`` and the
+``timeout_ms`` of the call. The other failures become replies that the
+quorum logic and membership already log (``quorum.write_failed``,
+``node.state_changed``).
 """
 
 from __future__ import annotations
@@ -53,7 +59,8 @@ from typing import Any, TypeVar
 import ray
 from ray.exceptions import RayActorError, RayError
 
-from source.adapters.system.ray_node import actor_name
+from source.adapters.system.ray.ray_node import actor_name
+from source.application.observability import get_logger
 from source.domain.canonical import FormatError, is_int
 from source.domain.envelope import Envelope
 from source.domain.identifiers import UserId
@@ -62,6 +69,8 @@ from source.domain.node_id import NodeId
 from source.domain.records import DirectoryRecord, NodeReply, PutOutcome
 
 T = TypeVar("T")
+
+log = get_logger(__name__)
 
 # Turns the ``value`` of an OK reply into the port's type; raises if it is wrong.
 Parser = Callable[[Any], T]
@@ -264,6 +273,12 @@ class RayNodeGateway:
         if not quorum_reached:
             for node in pending.values():  # asked, but no answer in time
                 replies[node] = NodeReply(node=node, ok=False, error="timeout")
+                log.warning(
+                    "actor.call_timeout",
+                    node=node,
+                    method=method,
+                    timeout_ms=timeout_ms,
+                )
         return [replies[n] for n in asked if n in replies]
 
     def _receive(self, ref: Any, node: NodeId, parse: Parser[T]) -> NodeReply[T]:

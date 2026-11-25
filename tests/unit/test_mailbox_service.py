@@ -1,5 +1,6 @@
 """Tests for the mailbox service, on in-memory adapters, a fake crypto and a manual clock."""
 
+import logging
 from dataclasses import replace
 
 import pytest
@@ -32,6 +33,7 @@ from tests.support.builders import (
     collect_request,
     signed_by,
 )
+from tests.support.logs import event_names, events, has_event
 
 
 class Mailbox:
@@ -343,3 +345,52 @@ def test_collecting_and_acknowledging_everything_empties_the_mailbox(
     assert len(pending) == count
     assert box.acknowledge(BOB, [e.message_id for e in pending]) == count
     assert box.collect() == []
+
+
+# ------- logs: mailbox.* (docs/logging.md) -------
+def test_deposits_are_logged_with_their_outcome(
+    box: Mailbox, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    env = make_envelope()
+    box.deposit(env)
+    box.deposit(env)  # the copy from another replica path
+    assert events(caplog) == [
+        ("mailbox.deposited", {"msg": env.message_id, "outcome": PutOutcome.STORED}),
+        (
+            "mailbox.deposited",
+            {"msg": env.message_id, "outcome": PutOutcome.ALREADY_PRESENT},
+        ),
+    ]
+    assert {r.levelno for r in caplog.records} == {logging.DEBUG}
+
+
+def test_collect_and_acknowledge_are_logged_with_a_count(
+    box: Mailbox, caplog: pytest.LogCaptureFixture
+) -> None:
+    envs = [make_envelope(), make_envelope()]
+    for env in envs:
+        box.deposit(env)
+    caplog.set_level(logging.DEBUG, logger="p08")
+    box.collect(BOB)
+    box.acknowledge(BOB, [envs[0].message_id])
+    assert has_event(caplog, "mailbox.collected", user=BOB.user_id, count=2)
+    assert has_event(caplog, "mailbox.acknowledged", user=BOB.user_id, count=1)
+
+
+def test_a_refused_request_is_a_warning_with_the_reason(
+    box: Mailbox, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    request = collect_request(BOB, clock.now_ms())
+    box.service.collect(request)
+    with denied(AccessDenial.REPLAYED):
+        box.service.collect(request)  # the same request again
+    assert event_names(caplog) == ["mailbox.collected", "mailbox.request_refused"]
+    assert has_event(
+        caplog,
+        "mailbox.request_refused",
+        user=BOB.user_id,
+        reason=AccessDenial.REPLAYED,
+    )
+    assert caplog.records[-1].levelno == logging.WARNING

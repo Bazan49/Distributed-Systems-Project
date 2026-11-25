@@ -42,6 +42,19 @@ def test_a_minimal_configuration_gets_the_defaults() -> None:
     assert cfg.client_factory == DEFAULT_CLIENT_FACTORY
     assert cfg.ray_address is None
     assert cfg.pin_nodes is False
+    assert cfg.log_dir is None
+
+
+def test_the_log_folder_is_absolute_and_relative_to_the_config_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert parse_config(config(log_dir="logs"), BASE).logs_dir() == BASE / "logs"
+    assert parse_config(config(log_dir="/var/p08"), BASE).logs_dir() == Path("/var/p08")
+    monkeypatch.setenv("P08_LOG_DIR", str(tmp_path / "from-env"))
+    assert parse_config(config(), BASE).logs_dir() == tmp_path / "from-env"
+    monkeypatch.delenv("P08_LOG_DIR")
+    monkeypatch.chdir(tmp_path)
+    assert parse_config(config(), BASE).logs_dir() == tmp_path / "logs"
 
 
 def test_a_full_configuration_is_read_as_written() -> None:
@@ -88,6 +101,8 @@ def test_a_full_configuration_is_read_as_written() -> None:
         (config(ray_address=""), "ray_address"),
         (config(nodo=["node-1"]), "unknown keys"),
         (config(pin_nodes="yes"), "pin_nodes"),
+        (config(log_dir=""), "log_dir"),
+        (config(log_dir=5), "log_dir"),
     ],
 )
 def test_invalid_configurations_say_what_is_wrong(raw: Any, message: str) -> None:
@@ -142,7 +157,6 @@ def test_the_default_factory_is_the_real_client_actor() -> None:
         ({"kdf": "slow"}, "kdf"),
         ({"tick_interval_ms": 0}, "tick_interval_ms"),
         ({"tick_interval_ms": True}, "tick_interval_ms"),
-        ({"log_dir": ""}, "log_dir"),
     ],
 )
 def test_the_default_factory_rejects_bad_options_before_starting_anything(

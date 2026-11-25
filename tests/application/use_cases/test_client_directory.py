@@ -8,6 +8,8 @@ the same in-memory cluster of 3 nodes, all driven by one ``ManualClock``.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from source.adapters.memory.clock import ManualClock
@@ -24,6 +26,7 @@ from source.domain.directory import public_key_of
 from source.domain.node_id import NodeId
 from source.domain.placement import rank_nodes
 from tests.support.builders import ALICE, BOB, CARLA, Person, make_identity
+from tests.support.logs import event_names, has_event
 
 NODES = [NodeId("node-1"), NodeId("node-2"), NodeId("node-3")]
 LEASE_MS = 30_000
@@ -233,3 +236,65 @@ def test_invalid_policies_are_rejected(lease: object, margin: object) -> None:
 def test_the_default_policy_renews_well_before_the_lease_ends() -> None:
     policy = PresencePolicy()
     assert policy.renew_margin_ms > policy.lease_ms // 2
+
+
+# ====== logs: presence.published / presence.renew_failed (docs/logging.md) ======
+def presence_events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [n for n in event_names(caplog) if n.startswith("presence.")]
+
+
+def test_a_publication_is_logged_with_its_version_and_lease(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    attempt = world.alice.publish()
+    assert has_event(
+        caplog,
+        "presence.published",
+        version=attempt.record.version,
+        expires_in_ms=LEASE_MS,
+    )
+    [record] = [r for r in caplog.records if r.getMessage() == "presence.published"]
+    assert record.levelno == logging.DEBUG  # every ~10 s: detail
+
+
+def test_a_failed_renewal_says_how_long_the_old_presence_lasts(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    world.alice.publish()
+    for node in rank_nodes(ALICE.user_id, NODES)[:2]:
+        world.gateway.set_down(node)
+    world.clock.advance(LEASE_MS - MARGIN_MS)
+    caplog.set_level(logging.DEBUG, logger="p08")
+
+    failed = world.alice.renew_if_due()
+
+    assert failed is not None
+    assert presence_events(caplog) == ["presence.renew_failed"]  # only that one
+    assert has_event(
+        caplog,
+        "presence.renew_failed",
+        version=failed.record.version,
+        expires_in_ms=MARGIN_MS,  # what is left of the previous lease
+    )
+    [record] = [r for r in caplog.records if r.getMessage() == "presence.renew_failed"]
+    assert record.levelno == logging.WARNING
+
+
+def test_a_failed_first_publish_has_nothing_left(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    for node in NODES[:2]:
+        world.gateway.set_down(node)
+    world.alice.publish()
+    assert has_event(caplog, "presence.renew_failed", expires_in_ms=0)
+
+
+def test_renew_if_due_logs_nothing_when_nothing_is_due(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    world.alice.publish()
+    caplog.set_level(logging.DEBUG, logger="p08")
+    assert world.alice.renew_if_due() is None
+    assert presence_events(caplog) == []

@@ -29,7 +29,7 @@ leerlos y cómo añadirlos**.
 
 | Proceso | Archivo | Quién lo configura |
 |---|---|---|
-| Un nodo de servicio (actor de Ray) | `logs/node-<id>.jsonl` | El `__init__` del actor (ver sección 7) |
+| Un nodo de servicio (actor de Ray) | `logs/<id del nodo>.jsonl`, p. ej. `logs/node-1.jsonl` | El `__init__` del actor, con el `LogSetup` que le pasa el lanzador (ver sección 7) |
 | Un cliente (actor de Ray) | `logs/client-<dispositivo>.jsonl` | `RayClientFactory`, al construir el cliente dentro del actor |
 
 - La carpeta es **`logs/`**, relativa al directorio desde el que se lanza.
@@ -225,6 +225,22 @@ Cuando un actor se reinicia (`max_restarts`), su `__init__` vuelve a
 ejecutarse: el log continúa en el mismo archivo, con un `run` nuevo y otro
 `pid`. Así se **ve** el reinicio en el log.
 
+**Cómo está hecho en el proyecto.** `ray_node.py` es un adaptador y no puede
+depender de la composición, donde vive `configure_logging`. Por eso el
+lanzador le **inyecta** un `LogSetup` (en `logging_setup.py`): los mismos
+argumentos de `configure_logging` empaquetados como un objeto serializable.
+`ServiceNode.__init__` lo ejecuta **lo primero**, y Ray lo vuelve a ejecutar en
+cada reinicio, que el nodo registra como `actor.restarted`. El cliente hace lo
+mismo dentro de `RayClientFactory`.
+
+El lanzador (`python -m source.composition.launcher cluster.json`) da a todos
+los procesos la **misma carpeta absoluta**: la clave `log_dir` del archivo de
+configuración (relativa a ese archivo), o si no `P08_LOG_DIR`, o si no `logs/`.
+El nivel es el `P08_LOG_LEVEL` del proceso que lanza. La carpeta y el nivel
+viajan **explícitos** (en el `LogSetup` y en la fábrica del cliente), no en el
+`runtime_env` de `ray.init`: un `runtime_env` necesita el agente de entornos de
+Ray, y sin él ningún actor llega a arrancar.
+
 ## Niveles: cuándo usar cada uno
 
 | Nivel | Cuándo | Ejemplos |
@@ -303,16 +319,16 @@ Este es el contrato de eventos. **Si añades uno, añádelo aquí.**
 
 | Evento | Nivel | Campos | Dónde | |
 |---|---|---|---|---|
-| `quorum.write` | DEBUG | `kind` (`deposit`/`publish`), `msg` o `user`, `asked`, `confirmed_by`, `outcome` | `QuorumClient` | ⏳ |
-| `quorum.write_failed` | WARNING | ídem | `QuorumClient` | ⏳ |
-| `node.state_changed` | INFO / WARNING (si pasa a `dead`) | `node`, `from_state`, `to_state` | `MembershipService` | ⏳ |
-| `presence.published` / `presence.renew_failed` | DEBUG / WARNING | `version`, `expires_in_ms` | `DirectoryClient` | ⏳ |
-| `record.accepted` / `record.rejected` | DEBUG / WARNING | `user`, `version`, `reason` | `DirectoryService` (nodo) | ⏳ |
-| `mailbox.deposited` | DEBUG | `msg`, `outcome` (`stored`/`already_present`) | `MailboxService` (nodo) | ⏳ |
-| `mailbox.collected` / `mailbox.acknowledged` | DEBUG | `user`, `count` | `MailboxService` (nodo) | ⏳ |
-| `mailbox.request_refused` | WARNING | `user`, `reason` (`replay`, `bad_signature`, `stale`) | `MailboxService` (nodo) | ⏳ |
-| `actor.started` / `actor.restarted` | INFO / WARNING | `node` | Adaptadores de Ray | ⏳ |
-| `actor.call_timeout` | WARNING | `node`, `method`, `timeout_ms` | Gateway de Ray | ⏳ |
+| `quorum.write` | DEBUG | `kind` (`deposit`/`publish`), `msg` (deposit) o `user` (publish), `asked`, `confirmed_by`, `outcome` (`accepted`) | `QuorumClient`, si hubo quórum | ✅ |
+| `quorum.write_failed` | WARNING | ídem, con `outcome` = `no_quorum` | `QuorumClient`, si no lo hubo (en lugar de `quorum.write`, nunca los dos) | ✅ |
+| `node.state_changed` | INFO / WARNING (si pasa a `dead`) | `node`, `from_state`, `to_state` (`alive`/`suspect`/`dead`) | `MembershipService`, cuando nota el cambio (un nodo nunca contactado cuenta como `suspect`) | ✅ |
+| `presence.published` / `presence.renew_failed` | DEBUG / WARNING | `version`, `expires_in_ms` (publicado: lo que dura la nueva presencia; fallido: lo que le queda a la anterior, `0` si ya no hay) | `DirectoryClient.publish` | ✅ |
+| `record.accepted` / `record.rejected` | DEBUG / WARNING | `user`, `version` (solo si tienen el tipo correcto), y `outcome` (`stored`/`unchanged`) o `reason` (`rejected_malformed`, `rejected_expired`, `rejected_invalid_signature`, `rejected_stale`…) | `DirectoryService.publish` (nodo) | ✅ |
+| `mailbox.deposited` | DEBUG | `msg`, `outcome` (`stored`/`already_present`) | `MailboxService` (nodo) | ✅ |
+| `mailbox.collected` / `mailbox.acknowledged` | DEBUG | `user`, `count` | `MailboxService` (nodo) | ✅ |
+| `mailbox.request_refused` | WARNING | `user`, `reason` (`replayed`, `invalid_signature`, `stale`, `bad_identity`, `wrong_action`) | `MailboxService` (nodo) | ✅ |
+| `actor.started` / `actor.restarted` | INFO / WARNING | `node` | `ServiceNode.__init__` (actor del nodo) | ✅ |
+| `actor.call_timeout` | WARNING | `node`, `method`, `timeout_ms` | `RayNodeGateway`, por cada nodo que no respondió a tiempo | ✅ |
 
 ### Infraestructura e interfaz (ya implementados)
 

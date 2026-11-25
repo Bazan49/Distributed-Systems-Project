@@ -18,6 +18,15 @@ The mailbox is where encrypted envelopes wait for a receiver who is offline.
 Depositing needs no signature from the depositor: the envelope itself is signed
 by its sender and the receiver verifies it. Spam control is out of Phase 1.
 
+Logs (see ``docs/logging.md``), where each decision is taken:
+
+* ``mailbox.deposited`` (DEBUG) with the ``msg`` and ``outcome`` (``stored``
+  or ``already_present``: each message arrives about 3 times by design);
+* ``mailbox.collected`` / ``mailbox.acknowledged`` (DEBUG) with the ``user``
+  and how many envelopes (``count``);
+* ``mailbox.request_refused`` (WARNING) with the ``user`` the request claims
+  to be and the ``reason`` (an ``AccessDenial``).
+
 It depends only on ports (store, crypto, clock) and the domain: no Ray, no SQLite.
 """
 
@@ -26,6 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.mailbox_store import MailboxStorePort
@@ -38,6 +48,8 @@ from source.domain.mailbox_access import (
     ReplayGuard,
 )
 from source.domain.records import PutOutcome
+
+log = get_logger(__name__)
 
 DAY_MS = 24 * 3600 * 1000
 DEFAULT_TTL_MS = 14 * DAY_MS  # how long a message waits for an offline receiver
@@ -101,7 +113,9 @@ class MailboxService:
         expiry: the store never overwrites it.
         """
         expires_at_ms = self._clock.now_ms() + self._policy.ttl_ms
-        return self._store.put(envelope, expires_at_ms)
+        outcome = self._store.put(envelope, expires_at_ms)
+        log.debug("mailbox.deposited", msg=envelope.message_id, outcome=outcome)
+        return outcome
 
     def collect(self, request: MailboxRequest) -> list[Envelope]:
         """Pending, non-expired envelopes of ``request.receiver``, oldest first.
@@ -115,7 +129,9 @@ class MailboxService:
         """
         self._authorize(request, MailboxAction.COLLECT)
         capped = min(request.limit, self._policy.max_fetch)
-        return self._store.fetch(request.receiver, capped, self._clock.now_ms())
+        found = self._store.fetch(request.receiver, capped, self._clock.now_ms())
+        log.debug("mailbox.collected", user=request.receiver, count=len(found))
+        return found
 
     def acknowledge(self, request: MailboxRequest) -> int:
         """Delete the confirmed envelopes of ``request.receiver``; return how many existed.
@@ -128,26 +144,38 @@ class MailboxService:
                 signed by the receiver.
         """
         self._authorize(request, MailboxAction.ACKNOWLEDGE)
-        return self._store.delete(request.receiver, list(request.message_ids))
+        removed = self._store.delete(request.receiver, list(request.message_ids))
+        log.debug("mailbox.acknowledged", user=request.receiver, count=removed)
+        return removed
 
     def purge_expired(self) -> int:
         """Physically remove every expired envelope; return how many."""
         return self._store.purge_expired(self._clock.now_ms())
 
     def _authorize(self, request: MailboxRequest, action: MailboxAction) -> None:
+        """Let the request through, or log and raise why it is refused."""
+        denial = self._denial(request, action)
+        if denial is not None:
+            log.warning("mailbox.request_refused", user=request.receiver, reason=denial)
+            raise MailboxAccessDenied(denial)
+
+    def _denial(
+        self, request: MailboxRequest, action: MailboxAction
+    ) -> AccessDenial | None:
         """Cheap checks first; the nonce is only consumed by an authentic request."""
         if request.action is not action:
-            raise MailboxAccessDenied(AccessDenial.WRONG_ACTION)
+            return AccessDenial.WRONG_ACTION
         now = self._clock.now_ms()
         if not self._replays.is_fresh(request.issued_at_ms, now):
-            raise MailboxAccessDenied(AccessDenial.STALE)
+            return AccessDenial.STALE
         if not request.identity_matches():
-            raise MailboxAccessDenied(AccessDenial.BAD_IDENTITY)
+            return AccessDenial.BAD_IDENTITY
         if not self._crypto.verify(
             request.public_key, request.signing_bytes(), request.signature
         ):
-            raise MailboxAccessDenied(AccessDenial.INVALID_SIGNATURE)
+            return AccessDenial.INVALID_SIGNATURE
         if not self._replays.check_and_remember(
             request.nonce, request.issued_at_ms, now
         ):
-            raise MailboxAccessDenied(AccessDenial.REPLAYED)
+            return AccessDenial.REPLAYED
+        return None

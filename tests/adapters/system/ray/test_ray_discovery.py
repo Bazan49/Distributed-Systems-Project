@@ -19,8 +19,8 @@ import ray
 
 from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.system.clock import SystemClock
-from source.adapters.system.ray_gateway import DiscoveryError, RayNodeGateway
-from source.adapters.system.ray_node import (
+from source.adapters.system.ray.ray_gateway import DiscoveryError, RayNodeGateway
+from source.adapters.system.ray.ray_node import (
     actor_name,
     registered_nodes,
     start_service_node,

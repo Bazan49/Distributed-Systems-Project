@@ -13,6 +13,16 @@ This service adds the I/O: it calls the ``NodeGatewayPort`` and, with every
 answer, updates the ``MembershipService`` (a node that refused a request is
 alive; only a node that did not answer is reported as failing).
 
+Logs (see ``docs/logging.md``): every write (deposit or publish) emits ONE
+event, where the quorum is decided, with the nodes asked and the nodes that
+confirmed:
+
+* ``quorum.write`` at DEBUG when the quorum was reached. It happens on every
+  send and every presence renewal: detail for debugging. The callers log
+  what the write MEANS (for example ``delivery.mailbox_accepted``).
+* ``quorum.write_failed`` at WARNING when it was not: anomalous, but handled
+  (the message stays queued, the presence is renewed again).
+
 Depends only on ports, other use cases and the domain: no Ray, no SQLite.
 """
 
@@ -20,7 +30,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.node_gateway import NodeGatewayPort
@@ -31,7 +43,7 @@ from source.application.use_cases.directory import (
 from source.application.use_cases.membership import MembershipService
 from source.domain.canonical import is_int
 from source.domain.envelope import Envelope
-from source.domain.identifiers import UserId
+from source.domain.identifiers import MessageId, UserId
 from source.domain.mailbox_access import MailboxAction, MailboxRequest
 from source.domain.messages import OutgoingMessage
 from source.domain.node_id import NodeId
@@ -49,6 +61,22 @@ from source.domain.quorum import (
 from source.domain.records import DirectoryRecord, NodeReply
 
 DEFAULT_TIMEOUT_MS = 2_000
+
+log = get_logger(__name__)
+
+
+class WriteKind(Enum):
+    """What a quorum write stores: an envelope or a directory record."""
+
+    DEPOSIT = "deposit"
+    PUBLISH = "publish"
+
+
+class WriteOutcome(Enum):
+    """Whether a quorum write reached ``write_quorum`` confirmations."""
+
+    ACCEPTED = "accepted"
+    NO_QUORUM = "no_quorum"
 
 
 @dataclass(frozen=True)
@@ -73,6 +101,10 @@ class WriteResult:
     accepted: bool  # at least ``write_quorum`` nodes confirmed
     confirmed_by: tuple[NodeId, ...]
     asked: tuple[NodeId, ...]
+
+    @property
+    def outcome(self) -> WriteOutcome:
+        return WriteOutcome.ACCEPTED if self.accepted else WriteOutcome.NO_QUORUM
 
 
 @dataclass(frozen=True)
@@ -123,7 +155,9 @@ class QuorumClient:
             if targets
             else []
         )
-        return self._write_result(targets, replies)
+        return self._write_result(
+            WriteKind.DEPOSIT, envelope.message_id, targets, replies
+        )
 
     def deposit_outgoing(self, message: OutgoingMessage) -> OutgoingMessage:
         """Try to deposit a queued message; return its new delivery state.
@@ -192,7 +226,7 @@ class QuorumClient:
             if targets
             else []
         )
-        return self._write_result(targets, replies)
+        return self._write_result(WriteKind.PUBLISH, record.user_id, targets, replies)
 
     def resolve(self, user_id: UserId) -> DirectoryRecord | None:
         """The newest valid record of ``user_id``, or None.
@@ -236,14 +270,34 @@ class QuorumClient:
         return read_targets(user, known, active, self._policy.replicas)
 
     def _write_result(
-        self, targets: Sequence[NodeId], replies: Sequence[NodeReply[object]]
+        self,
+        kind: WriteKind,
+        subject: MessageId | UserId,
+        targets: Sequence[NodeId],
+        replies: Sequence[NodeReply[object]],
     ) -> WriteResult:
+        """Count the confirmations, update membership and log the write (once)."""
         self._observe(replies)
-        return WriteResult(
+        result = WriteResult(
             accepted=quorum_reached(replies, self._policy.write_quorum),
             confirmed_by=tuple(confirmations(replies)),
             asked=tuple(targets),
         )
+        # A deposit is identified by its message, a publish by its user: the
+        # standard field names "msg" and "user" (the formatter shortens "user").
+        subject_field = "msg" if kind is WriteKind.DEPOSIT else "user"
+        fields = {
+            "kind": kind,
+            subject_field: subject,
+            "asked": result.asked,
+            "confirmed_by": result.confirmed_by,
+            "outcome": result.outcome,
+        }
+        if result.accepted:
+            log.debug("quorum.write", **fields)
+        else:
+            log.warning("quorum.write_failed", **fields)
+        return result
 
     def _observe(self, replies: Sequence[NodeReply[object]]) -> None:
         """Feed membership: answered (even refusing) = alive; no answer = failure."""

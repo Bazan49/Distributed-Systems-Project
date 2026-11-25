@@ -27,8 +27,8 @@ from source.adapters.system.ray.ray_client import (
     DEFAULT_TICK_INTERVAL_MS,
     start_client,
 )
+from source.adapters.system.ray.ray_gateway import RayNodeGateway
 from source.adapters.system.ray.ray_peer_transport import RayPeerTransport
-from source.adapters.system.ray_gateway import RayNodeGateway
 from source.application.ports.node_gateway import NodeGatewayPort
 from source.application.ports.peer_transport import PeerTransportPort
 from source.application.use_cases.client_app import ClientApp

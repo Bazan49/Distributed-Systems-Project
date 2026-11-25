@@ -35,11 +35,19 @@ Wire format (what crosses the process boundary):
 The actor runs one call at a time (Ray's default ``max_concurrency=1``). The
 services keep unsynchronised state in memory (the replay guard, the
 membership view), so do not raise the concurrency without adding locks.
+
+Logs (see ``docs/logging.md``): an actor is its own process, so the driver's
+logging configuration does not reach it. Whoever starts the node passes
+``log_setup`` (the composition's ``LogSetup``), and ``__init__`` runs it
+FIRST, before anything can log. Then it logs ``actor.started`` (INFO), or
+``actor.restarted`` (WARNING) when Ray is running ``__init__`` again after
+the process died: the new ``pid`` and ``run`` show the restart in the file.
 """
 
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +60,7 @@ from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
 from source.adapters.system.directory_store import SQLiteDirectoryStore
 from source.adapters.system.mailbox_store import SQLiteMailboxStore
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.use_cases.directory import DirectoryPolicy, DirectoryService
@@ -78,6 +87,24 @@ DEFAULT_MAX_RESTARTS = -1
 MAILBOX_DB = "mailbox.db"
 DIRECTORY_DB = "directory.db"
 ACTOR_PREFIX = "service-node-"
+
+log = get_logger(__name__)
+
+
+def _restarted_by_ray() -> bool:
+    """True inside a Ray actor whose ``__init__`` runs again after a crash.
+
+    False outside an actor (a plain ``ServiceNode`` in tests, or the driver).
+    """
+    if not ray.is_initialized():
+        return False
+    context = ray.get_runtime_context()
+    if context.get_actor_id() is None:  # the driver, not an actor
+        return False
+    with warnings.catch_warnings():
+        # Ray implements this property with its own deprecated ``actor_id``.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return bool(context.was_current_actor_reconstructed)
 
 
 def actor_name(node_id: str) -> str:
@@ -153,6 +180,7 @@ class ServiceNode:
         dead_timeout_ms: int = DEFAULT_DEAD_TIMEOUT_MS,
         namespace: str | None = None,
         node_lister: Callable[[], list[NodeId]] | None = None,
+        log_setup: Callable[[], object] | None = None,
     ) -> None:
         """Open (or create) this node's databases under ``data_dir/node_id/``.
 
@@ -164,10 +192,15 @@ class ServiceNode:
         ``node_lister`` replaces the Ray lookup of the registered nodes; it
         exists for tests without Ray.
 
+        ``log_setup`` configures the logging of THIS process; it runs first.
+        None leaves the logging as it is (tests, or a process already set up).
+
         Raises:
             ValueError: ``node_id`` is not a valid NodeId.
             StoreError: a database cannot be opened.
         """
+        if log_setup is not None:
+            log_setup()
         self._node = NodeId(node_id)
         folder = Path(data_dir) / self._node.value
         self._data_dir = str(folder)
@@ -187,6 +220,10 @@ class ServiceNode:
             if node_lister is not None
             else lambda: registered_nodes(namespace)
         )
+        if _restarted_by_ray():
+            log.warning("actor.restarted", node=self._node)
+        else:
+            log.info("actor.started", node=self._node)
 
     # ---- replies ----
     def _ok(self, value: Any = None) -> NodeReply[Any]:

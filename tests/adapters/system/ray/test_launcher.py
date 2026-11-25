@@ -24,9 +24,9 @@ import ray
 
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.crypto import NaClCrypto
+from source.adapters.system.ray.ray_gateway import RayNodeGateway
+from source.adapters.system.ray.ray_node import MAILBOX_DB, registered_nodes
 from source.adapters.system.ray.ray_peer_transport import inbox_name
-from source.adapters.system.ray_gateway import RayNodeGateway
-from source.adapters.system.ray_node import MAILBOX_DB, registered_nodes
 from source.composition.launcher import (
     DEFAULT_CLIENT_FACTORY,
     LaunchConfig,
@@ -63,10 +63,11 @@ def namespace(request: pytest.FixtureRequest) -> str:
 
 
 def make_config(tmp_path: Path, namespace: str, **overrides: Any) -> LaunchConfig:
-    options = client_options(tmp_path / "logs")
+    options = client_options()
     raw: dict[str, Any] = {
         "namespace": namespace,
         "data_dir": "state",
+        "log_dir": "logs",
         "nodes": NODES,
         "seeds": ["node-1"],
         "clients": [
@@ -139,6 +140,27 @@ def test_launched_clients_reach_the_nodes_and_each_other(
 
     assert sent.status is OutgoingStatus.DELIVERED  # straight to Bob's actor
     assert received(call(bob, "history", a.user_id)) == ["hola, Bob"]
+
+
+def test_every_process_writes_its_own_log_in_the_log_folder(
+    running: RunningCluster,
+) -> None:
+    logs = running.config.logs_dir()
+
+    def events_in(name: str) -> list[str]:
+        path = logs / f"{name}.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line)["event"] for line in lines]
+
+    for node in NODES:
+        wait_until(lambda n=node: "actor.started" in events_in(n), f"{node} logs")
+    for client in ("alice", "bob"):
+        wait_until(
+            lambda c=client: "logging.configured" in events_in(f"client-{c}"),
+            f"{client} logs",
+        )
 
 
 def test_each_node_keeps_its_files_in_its_folder(running: RunningCluster) -> None:
@@ -221,7 +243,7 @@ def test_if_a_client_fails_to_start_everything_is_stopped(
         tmp_path,
         namespace,
         clients=[
-            {"id": "alice", "options": client_options(tmp_path / "logs")},
+            {"id": "alice", "options": client_options()},
             {"id": "bob", "options": {"kdf": "slow"}},
         ],
     )
@@ -285,10 +307,10 @@ def test_one_command_starts_3_nodes_and_2_clients_and_stops_them(
             {
                 "namespace": namespace,
                 "data_dir": "state",
+                "log_dir": "logs",
                 "nodes": NODES,
                 "clients": [
-                    {"id": c, "options": client_options(tmp_path / "logs")}
-                    for c in ("alice", "bob")
+                    {"id": c, "options": client_options()} for c in ("alice", "bob")
                 ],
             }
         ),

@@ -97,3 +97,38 @@ def test_it_reads_a_live_stream_from_stdin(
 
     assert "node.state_changed" in lines[0]
     assert lines[1] == "not json"  # never hidden
+
+
+def test_a_node_field_is_not_taken_for_who_wrote_the_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A CLIENT logs that it sees node-2 dead: the line is about node-2, but
+    # client-alice wrote it.
+    log = write(
+        tmp_path / "client-alice.jsonl",
+        event(
+            "10:00:00.000",
+            "node.state_changed",
+            "WARNING",
+            process="client-alice",
+            node="node-2",
+            to_state="dead",
+        ),
+    )
+    [line] = run(capsys, str(log))
+    assert line.split()[2] == "client-alice"  # who
+    assert "node=node-2" in line  # what it is about, still shown
+    assert run(capsys, str(log), "--who", "node-2") == []
+    assert len(run(capsys, str(log), "--who", "client-alice")) == 1
+
+
+def test_a_node_s_own_lines_still_show_the_node_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = write(
+        tmp_path / "node-1.jsonl",
+        event("10:00:00.000", "actor.started", process="node-1", node="node-1"),
+    )
+    [line] = run(capsys, str(log))
+    assert line.split()[2] == "node-1"
+    assert "node=" not in line  # the same as who: not repeated

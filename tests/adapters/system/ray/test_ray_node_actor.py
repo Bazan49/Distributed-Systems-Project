@@ -9,6 +9,7 @@ and the real clock, because a ``ManualClock`` would be a copy in the actor.
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from collections.abc import Iterator
@@ -21,7 +22,8 @@ from ray.exceptions import GetTimeoutError, RayActorError
 
 from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.system.clock import SystemClock
-from source.adapters.system.ray_node import actor_name, start_service_node
+from source.adapters.system.ray.ray_node import actor_name, start_service_node
+from source.composition.logging_setup import LogSetup
 from source.domain.envelope import Envelope
 from source.domain.records import PutOutcome
 from tests.contracts.mailbox_store_contract import make_envelope
@@ -162,3 +164,51 @@ def test_start_service_node_returns_the_existing_actor(
 ) -> None:
     same = start_service_node(node_id, tmp_path, crypto=FakeCrypto())
     assert call(same, "info").pid == call(node, "info").pid
+
+
+# ---------------- logs: the node writes its own file (docs/logging.md) ----------------
+def read_log(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def wait_for_event(path: Path, event: str) -> dict[str, Any]:
+    deadline = time.monotonic() + RESTART_TIMEOUT_S
+    while time.monotonic() < deadline:
+        found = [line for line in read_log(path) if line["event"] == event]
+        if found:
+            return found[-1]
+        time.sleep(0.1)
+    raise AssertionError(f"no {event} in {path}: {read_log(path)}")
+
+
+def test_a_node_logs_its_start_and_its_restart_in_its_own_file(
+    node_id: str, tmp_path: Path
+) -> None:
+    logs = tmp_path / "logs"
+    setup = LogSetup(
+        process=node_id, log_dir=str(logs), level="DEBUG", context=(("node", node_id),)
+    )
+    handle = start_service_node(node_id, tmp_path, crypto=FakeCrypto(), log_setup=setup)
+    try:
+        envelope = make_envelope()
+        call(handle, "deposit", envelope.to_bytes())
+        path = logs / f"{node_id}.jsonl"
+
+        started = wait_for_event(path, "actor.started")
+        assert started["level"] == "INFO" and started["node"] == node_id
+        deposited = wait_for_event(path, "mailbox.deposited")  # from the actor
+        assert deposited["msg"] == envelope.message_id.value
+        assert deposited["outcome"] == "stored"
+
+        old_pid = call(handle, "info").pid
+        ray.kill(handle, no_restart=False)  # a crash: Ray runs __init__ again
+        wait_for_new_process(handle, old_pid)
+
+        restarted = wait_for_event(path, "actor.restarted")
+        assert restarted["level"] == "WARNING" and restarted["node"] == node_id
+        assert restarted["pid"] != started["pid"]  # a new process...
+        assert restarted["run"] != started["run"]  # ...and a new run in the file
+    finally:
+        ray.kill(handle, no_restart=True)
