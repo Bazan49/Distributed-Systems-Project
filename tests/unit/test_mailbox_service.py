@@ -1,5 +1,6 @@
 """Tests for the mailbox service, on in-memory adapters, a fake crypto and a manual clock."""
 
+import logging
 from dataclasses import replace
 
 import pytest
@@ -32,6 +33,7 @@ from tests.support.builders import (
     collect_request,
     signed_by,
 )
+from tests.support.logs import events
 
 
 class Mailbox:
@@ -343,3 +345,21 @@ def test_collecting_and_acknowledging_everything_empties_the_mailbox(
     assert len(pending) == count
     assert box.acknowledge(BOB, [e.message_id for e in pending]) == count
     assert box.collect() == []
+
+
+# ------- logs: mailbox.* (docs/logging.md) -------
+def test_deposits_are_logged_with_their_outcome(
+    box: Mailbox, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    env = make_envelope()
+    box.deposit(env)
+    box.deposit(env)  # the copy from another replica path
+    assert events(caplog) == [
+        ("mailbox.deposited", {"msg": env.message_id, "outcome": PutOutcome.STORED}),
+        (
+            "mailbox.deposited",
+            {"msg": env.message_id, "outcome": PutOutcome.ALREADY_PRESENT},
+        ),
+    ]
+    assert {r.levelno for r in caplog.records} == {logging.DEBUG}

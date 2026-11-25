@@ -18,6 +18,11 @@ The mailbox is where encrypted envelopes wait for a receiver who is offline.
 Depositing needs no signature from the depositor: the envelope itself is signed
 by its sender and the receiver verifies it. Spam control is out of Phase 1.
 
+Logs (see ``docs/logging.md``), where each decision is taken:
+
+* ``mailbox.deposited`` (DEBUG) with the ``msg`` and ``outcome`` (``stored``
+  or ``already_present``: each message arrives about 3 times by design).
+
 It depends only on ports (store, crypto, clock) and the domain: no Ray, no SQLite.
 """
 
@@ -26,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.mailbox_store import MailboxStorePort
@@ -38,6 +44,8 @@ from source.domain.mailbox_access import (
     ReplayGuard,
 )
 from source.domain.records import PutOutcome
+
+log = get_logger(__name__)
 
 DAY_MS = 24 * 3600 * 1000
 DEFAULT_TTL_MS = 14 * DAY_MS  # how long a message waits for an offline receiver
@@ -101,7 +109,9 @@ class MailboxService:
         expiry: the store never overwrites it.
         """
         expires_at_ms = self._clock.now_ms() + self._policy.ttl_ms
-        return self._store.put(envelope, expires_at_ms)
+        outcome = self._store.put(envelope, expires_at_ms)
+        log.debug("mailbox.deposited", msg=envelope.message_id, outcome=outcome)
+        return outcome
 
     def collect(self, request: MailboxRequest) -> list[Envelope]:
         """Pending, non-expired envelopes of ``request.receiver``, oldest first.
