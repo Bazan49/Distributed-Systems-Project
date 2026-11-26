@@ -29,6 +29,12 @@ transport is told to call it on login. An envelope is confirmed to its sender
 only if it was settled; otherwise the transport reports a failure and the
 sender falls back to the mailboxes.
 
+Change listeners (``add_change_listener``) are called when a conversation
+may look different: messages were stored in the history (texts, contact
+messages), or a sent message changed state (delivered, accepted by the
+mailboxes, expired). Never for a tick that changed nothing, so an
+interface can wait for them instead of polling.
+
 Not thread-safe: the caller serialises calls (the Ray client actor holds one lock).
 It depends only on ports, the other use cases and the domain: no Ray, no SQLite.
 """
@@ -86,6 +92,7 @@ from source.domain.ordering import OrderingPolicy
 from source.domain.outgoing_status import OutgoingStatus
 
 __all__ = [
+    "ChangeListener",
     "ClientApp",
     "ClientError",
     "ClientPolicy",
@@ -98,6 +105,18 @@ __all__ = [
 
 log = get_logger(__name__)
 
+
+ChangeListener = Callable[[], None]
+"""Called with no arguments when a conversation may look different."""
+
+# A sent message changed state (its status in the history) in these outcomes.
+_STATUS_CHANGES = frozenset(
+    {
+        DeliveryOutcome.DELIVERED_DIRECT,
+        DeliveryOutcome.ACCEPTED_BY_MAILBOX,
+        DeliveryOutcome.EXPIRED,
+    }
+)
 
 # errors
 
@@ -255,6 +274,20 @@ class ClientApp:
         )
         self._session: _Session | None = None
         self._last_run_ms: dict[str, int] = {}
+        self._listeners: list[ChangeListener] = []
+
+    def add_change_listener(self, listener: ChangeListener) -> None:
+        """Call ``listener`` whenever a conversation may look different.
+
+        It runs in the thread that did the work (a tick, a direct envelope, a
+        send), while the caller holds its lock: it must be quick and must not
+        call the app back. Typically it only wakes someone up.
+        """
+        self._listeners.append(listener)
+
+    def _changed(self) -> None:
+        for listener in list(self._listeners):
+            listener()
 
     # account
 
@@ -432,6 +465,8 @@ class ClientApp:
             gaps=gaps,
             delivery=delivery,
         )
+        if report.stored or _changes_status(delivery):
+            self._changed()
         _log_tick(report)
         return report
 
@@ -442,7 +477,10 @@ class ClientApp:
             NotLoggedInError: nobody is logged in.
         """
         session = self._require_session()
-        return self._receiver.receive(session.identity, envelope)
+        result = self._receiver.receive(session.identity, envelope)
+        if result.released:
+            self._changed()
+        return result
 
     # internals
 
@@ -478,7 +516,10 @@ class ClientApp:
 
     def _deliver(self, session: _Session) -> DeliveryReport:
         self._refresh_membership_if_due()
-        return session.delivery.deliver_due()
+        report = session.delivery.deliver_due()
+        if _changes_status(report):
+            self._changed()
+        return report
 
     def _collect(self, session: _Session) -> BatchResult:
         identity = session.identity
@@ -542,6 +583,11 @@ class ClientApp:
             fingerprint=self._contacts.my_fingerprint(identity),
             link=self._contacts.my_link(identity),
         )
+
+
+def _changes_status(report: DeliveryReport) -> bool:
+    """True if some sent message changed state in this delivery round."""
+    return any(outcome in _STATUS_CHANGES for _, outcome in report.outcomes)
 
 
 def _received_entries(

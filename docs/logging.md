@@ -31,6 +31,7 @@ leerlos y cómo añadirlos**.
 |---|---|---|
 | Un nodo de servicio (actor de Ray) | `logs/<id del nodo>.jsonl`, p. ej. `logs/node-1.jsonl` | El `__init__` del actor, con el `LogSetup` que le pasa el lanzador (ver sección 7) |
 | Un cliente (actor de Ray) | `logs/client-<dispositivo>.jsonl` | `RayClientFactory`, al construir el cliente dentro del actor |
+| La interfaz de línea de comandos | `logs/cli-<dispositivo>.jsonl` | `python -m source.composition.cli`, al arrancar (ver `docs/cli.md`) |
 
 - La carpeta es **`logs/`**, relativa al directorio desde el que se lanza.
   Se cambia con el argumento `log_dir` o con la variable de entorno
@@ -351,7 +352,7 @@ Este es el contrato de eventos.
 | `direct.unreachable` | DEBUG | `to`, `msg`, `reason` | `RayPeerTransport` | ✅ |
 | `direct.not_settled` | DEBUG | `msg`, `reason` | `RayPeerTransport` | ✅ |
 | `direct.rejected` | WARNING | `reason` | `RayPeerTransport` | ✅ |
-| `cli.store_failed` | ERROR | `screen` | Pantallas de la CLI | ✅ |
+| `cli.store_failed` | ERROR | `screen` (`register`, `login`, `menu`, `conversations`, `chat`, `add_contact`, `requests`, `contacts`, `profile`) | Pantallas de la CLI (`source/adapters/cli/app.py`), con la traza | ✅ |
 
 ## Pruebas
 

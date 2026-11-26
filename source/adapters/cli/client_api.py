@@ -1,0 +1,53 @@
+"""What the interface needs from a client: the operations a user can do.
+
+It is the public API of the client actor (``ClientHost``), so a ``ClientHost``
+in the same process satisfies it as it is, and ``RemoteClient`` satisfies it
+by calling the actor of a Ray cluster.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from source.application.use_cases.client_app import HistoryEntry, Profile, TickReport
+from source.application.use_cases.contacts import AddResult, ContactView
+from source.domain.contacts import ContactState
+from source.domain.identifiers import UserId
+from source.domain.messages import OutgoingMessage
+
+__all__ = ["ClientApi", "ClientUnavailableError"]
+
+
+class ClientUnavailableError(Exception):
+    """The client does not answer any more (its process stopped)."""
+
+
+@runtime_checkable
+class ClientApi(Protocol):
+    """One device's client, as the interface uses it."""
+
+    # account
+    def is_registered(self) -> bool: ...
+    def logged_in(self) -> bool: ...
+    def register(self, alias: str, password: str) -> Profile: ...
+    def login(self, password: str) -> Profile: ...
+    def logout(self) -> None: ...
+    def profile(self) -> Profile: ...
+
+    # contacts
+    def add_contact(self, link: str) -> AddResult: ...
+    def contacts(self, state: ContactState | None = None) -> list[ContactView]: ...
+    def pending_requests(self) -> list[ContactView]: ...
+    def accept(self, user_id: UserId) -> ContactView: ...
+    def reject(self, user_id: UserId) -> None: ...
+    def remove_contact(self, user_id: UserId) -> bool: ...
+
+    # conversations
+    def send(self, to: UserId, body: str) -> OutgoingMessage: ...
+    def history(self, contact: UserId, limit: int = 50) -> list[HistoryEntry]: ...
+
+    # network: one round of periodic work (None if nobody is logged in)
+    def tick(self) -> TickReport | None: ...
+
+    # changes: block until a conversation may look different (see ClientHost)
+    def wait_for_change(self, after: int, timeout_s: float) -> int: ...
