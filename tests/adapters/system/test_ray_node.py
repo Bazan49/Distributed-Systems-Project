@@ -8,6 +8,9 @@ arguments over the same folder.
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -47,7 +50,13 @@ def clock() -> ManualClock:
 def make_node(
     tmp_path: Path, clock: ManualClock, node_id: str = "node-1"
 ) -> ServiceNode:
-    return ServiceNode(node_id, str(tmp_path), crypto=FakeCrypto(), clock=clock)
+    return ServiceNode(
+        node_id,
+        str(tmp_path),
+        crypto=FakeCrypto(),
+        clock=clock,
+        purge_interval_ms=None,  # no background thread: the tests purge by hand
+    )
 
 
 @pytest.fixture
@@ -89,7 +98,7 @@ def test_ping_answers_ok_with_the_node_id(node: ServiceNode) -> None:
 
 
 def test_by_default_it_uses_the_real_clock_and_crypto(tmp_path: Path) -> None:
-    node = ServiceNode("node-1", str(tmp_path))
+    node = ServiceNode("node-1", str(tmp_path), purge_interval_ms=None)
     assert node.ping().ok
     node.close()
 
@@ -273,6 +282,7 @@ def test_list_nodes_answers_the_registered_nodes_and_itself(
         crypto=FakeCrypto(),
         clock=clock,
         node_lister=lambda: registered,
+        purge_interval_ms=None,
     )
     reply = node.list_nodes()
     assert reply.ok and reply.value == ["node-1", "node-2", "node-3"]
@@ -287,6 +297,7 @@ def test_list_nodes_leaves_out_peers_this_node_knows_are_dead(
         crypto=FakeCrypto(),
         clock=clock,
         node_lister=lambda: [NodeId("node-1"), NodeId("node-2"), NodeId("node-3")],
+        purge_interval_ms=None,
     )
     node.report_peer("node-3", answered=False)
     clock.advance(15_000)
@@ -304,7 +315,12 @@ def test_the_log_setup_runs_first_and_the_start_is_logged(
         seen_before_setup.append(event_names(caplog))
 
     ServiceNode(
-        "node-1", str(tmp_path), crypto=FakeCrypto(), clock=clock, log_setup=setup
+        "node-1",
+        str(tmp_path),
+        crypto=FakeCrypto(),
+        clock=clock,
+        log_setup=setup,
+        purge_interval_ms=None,
     )
 
     assert seen_before_setup == [[]]  # it ran once, before any event
@@ -321,3 +337,134 @@ def test_the_node_events_reach_the_log(
     assert has_event(
         caplog, "mailbox.deposited", msg=envelope.message_id, outcome=PutOutcome.STORED
     )
+
+
+# ---------------- the node purges by itself ----------------
+EXPIRED_MS = max(DEFAULT_TTL_MS, DEFAULT_MAX_LEASE_MS)  # everything has expired
+
+
+def fill(node: ServiceNode, clock: ManualClock) -> None:
+    """One envelope and one record, then let them expire."""
+    node.deposit(make_envelope().to_bytes())
+    node.publish_record(signed_record(ALICE, clock.now_ms()))
+    clock.advance(EXPIRED_MS)
+
+
+def wait_until(condition: Callable[[], bool], what: str) -> None:
+    deadline = time.monotonic() + 5
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting until {what}")
+        time.sleep(0.01)
+
+
+def test_a_purge_that_deletes_something_is_logged_and_one_that_does_not_is_not(
+    node: ServiceNode, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    assert node.purge_expired() == (0, 0)
+    assert "node.purged" not in event_names(caplog)  # nothing to say
+    fill(node, clock)
+    assert node.purge_expired() == (1, 1)
+    assert has_event(caplog, "node.purged", envelopes=1, records=1)
+    [record] = [r for r in caplog.records if r.getMessage() == "node.purged"]
+    assert record.levelno == logging.DEBUG
+
+
+def test_a_node_purges_what_expired_while_it_was_down(
+    tmp_path: Path, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    before = make_node(tmp_path, clock)
+    fill(before, clock)
+    before.close()  # down while everything expires
+
+    caplog.set_level(logging.DEBUG, logger="p08")
+    again = make_node(tmp_path, clock)  # restart over the same files
+
+    assert has_event(caplog, "node.purged", envelopes=1, records=1)
+    assert again.purge_expired() == (0, 0)  # already gone from disk
+
+
+def test_the_background_thread_purges_on_its_own_and_stops_on_close(
+    tmp_path: Path, clock: ManualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    node = ServiceNode(
+        "node-1", str(tmp_path), crypto=FakeCrypto(), clock=clock, purge_interval_ms=20
+    )
+    fill(node, clock)
+    wait_until(lambda: has_event(caplog, "node.purged"), "the thread purges")
+
+    node.close()
+    assert not any(t.name == "purge-node-1" for t in threading.enumerate())
+
+
+def test_a_failed_purge_is_logged_and_the_node_keeps_purging(
+    tmp_path: Path,
+    clock: ManualClock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="p08")
+    node = ServiceNode(
+        "node-1", str(tmp_path), crypto=FakeCrypto(), clock=clock, purge_interval_ms=20
+    )
+    real = node._mailbox.purge_expired
+    failures = iter([StoreError("disk full")])
+
+    def flaky() -> int:
+        error = next(failures, None)
+        if error is not None:
+            raise error
+        return real()
+
+    monkeypatch.setattr(node._mailbox, "purge_expired", flaky)
+    fill(node, clock)
+
+    wait_until(lambda: has_event(caplog, "node.purged"), "a later purge works")
+    assert has_event(caplog, "node.purge_failed", node=NodeId("node-1"))
+    [failed] = [r for r in caplog.records if r.getMessage() == "node.purge_failed"]
+    assert failed.levelno == logging.ERROR and failed.exc_info is not None
+    assert node.ping().ok  # still serving
+    node.close()
+
+
+def test_a_failure_at_start_does_not_stop_the_node(
+    tmp_path: Path,
+    clock: ManualClock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(self: object) -> int:
+        raise StoreError("disk full")
+
+    monkeypatch.setattr(
+        "source.application.use_cases.mailbox.MailboxService.purge_expired", broken
+    )
+    caplog.set_level(logging.DEBUG, logger="p08")
+    node = make_node(tmp_path, clock)
+    assert has_event(caplog, "node.purge_failed")
+    assert node.deposit(make_envelope().to_bytes()).ok
+
+
+def test_the_purge_waits_for_a_call_in_progress(node: ServiceNode) -> None:
+    done = threading.Event()
+
+    def purge() -> None:
+        node.purge_expired()
+        done.set()
+
+    with node._lock:  # a call to the node is running
+        purger = threading.Thread(target=purge)
+        purger.start()
+        assert not done.wait(0.2)  # the purge cannot run beside it
+    assert done.wait(5)  # it runs as soon as the call ends
+    purger.join()
+
+
+@pytest.mark.parametrize("interval", [0, -1, 1.5, True])
+def test_the_purge_interval_must_be_a_positive_integer(
+    tmp_path: Path, interval: object
+) -> None:
+    with pytest.raises(ValueError, match="purge_interval_ms"):
+        ServiceNode("node-1", str(tmp_path), purge_interval_ms=interval)
