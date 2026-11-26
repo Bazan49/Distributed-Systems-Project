@@ -54,9 +54,12 @@ class MessageKind(str, Enum):
     TEXT = "text"
     CONTACT_REQUEST = "contact_request"
     CONTACT_ACCEPT = "contact_accept"
-    # Delivery receipt: "I stored these messages". ``body`` holds the confirmed
+    # Delivery receipt, written by the RECEIVER of some messages back to their
+    # sender: "I stored these messages". ``body`` holds the confirmed
     # MessageIds (see ``receipt_body``). It is how a sender learns that a
-    # message deposited in a mailbox arrived (OutgoingStatus.DELIVERED). A
+    # message it left in a mailbox arrived, and marks it
+    # OutgoingStatus.DELIVERED (see ``use_cases/receipts.py``). Mailboxes
+    # cannot tell it from a text: it is encrypted like any other content. A
     # receipt is never itself confirmed by another receipt.
     RECEIPT = "receipt"
 

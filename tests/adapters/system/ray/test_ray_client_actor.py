@@ -139,6 +139,12 @@ def test_an_offline_receiver_collects_from_the_mailboxes_when_it_connects(
         lambda texts: texts == ["te espero en el buzón"],
         "Bob collects the message on connecting",
     )
+    # His receipt travels back: Alice sees it delivered (✓✓).
+    wait_for(
+        lambda: [e.status for e in call(alice, "history", b.user_id)],
+        lambda statuses: statuses == [OutgoingStatus.DELIVERED],
+        "Alice learns that Bob got it",
+    )
 
 
 def test_the_device_actor_is_found_by_name_and_started_only_once(

@@ -48,13 +48,13 @@ dentro de unos pocos adaptadores, así que el resto del código no cambia.
 - Entrega directa entre usuarios conectados, con caída automática a los buzones.
 - Buzones replicados en 3 nodos con quórum 2 de 3. Cualquier nodo puede fallar sin que se pierdan mensajes.
 - Recogida al reconectarse, confirmación a los nodos y supresión de duplicados.
+- Acuses de recibo: un mensaje muestra ✓ cuando lo guardan los buzones y ✓✓ cuando ya está en el dispositivo del receptor.
 - Orden FIFO con huecos ("mensaje todavía no disponible") e historial ordenado por Lamport.
 - Un lanzador que levanta el clúster desde un archivo de configuración, y herramientas para tumbar y reiniciar nodos.
 - Una interfaz de texto para cada usuario, y logs estructurados en JSON de cada proceso.
 
 **Pendiente / límites conocidos**
 
-- **Acuses de recibo por el buzón.** Un mensaje entregado directamente muestra ✓✓, pero uno que pasó por un buzón se queda en ✓ aunque ya se haya leído.
 - **Borrado de datos caducados en los nodos.** Los mensajes caducados nunca se entregan, pero todavía no se borran del disco de los nodos.
 
 ## Cómo funciona
