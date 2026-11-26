@@ -31,6 +31,12 @@ the actor's process, that builds it (stores, cryptography, connections to the
 nodes) and receives the host's lock to protect the client from the threads of
 the transport. Wiring is the composition root's job, not an adapter's.
 
+Changes: ``wait_for_change`` lets an interface wait until a conversation may
+look different (a message stored, a sent message changing state), instead of
+asking every second. The host counts the app's change notifications; the call
+blocks until the count passes the one the caller already saw. It does not
+take the client's lock, so it never holds up the other calls.
+
 Concurrency: ``ClientApp`` is not thread-safe. Every entry (the loop, remote
 calls and the transport's listening thread) holds the same lock, while the
 actor accepts several calls at once (``max_concurrency``) so that a call
@@ -102,7 +108,10 @@ class ClientHost:
                 "tick_interval_ms must be a positive number of milliseconds"
             )
         self._lock = threading.RLock()
+        self._changes = threading.Condition()  # never held with self._lock
+        self._version = 0
         self._app = make_app(self._lock)
+        self._app.add_change_listener(self._on_change)
         self._stop = threading.Event()
         self._loop: threading.Thread | None = None
         if tick_interval_ms is not None:
@@ -110,6 +119,23 @@ class ClientHost:
                 target=self._run, args=(tick_interval_ms / 1000,), daemon=True
             )
             self._loop.start()
+
+    # ---- changes ----
+    def _on_change(self) -> None:
+        with self._changes:
+            self._version += 1
+            self._changes.notify_all()
+
+    def wait_for_change(self, after: int, timeout_s: float) -> int:
+        """Block until the change count is higher than ``after``; return the count.
+
+        Returns at once if it already is (``after=-1`` gives the current
+        count), and after ``timeout_s`` if nothing changed: then the result is
+        ``after`` itself. Waiting again with the result never misses a change.
+        """
+        with self._changes:
+            self._changes.wait_for(lambda: self._version > after, timeout=timeout_s)
+            return self._version
 
     # ---- the main loop ----
     def _run(self, interval_s: float) -> None:

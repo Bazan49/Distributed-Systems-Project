@@ -60,6 +60,9 @@ class FakeApp:
         self.calls.append(("logout", ()))
         self.logged_in = False
 
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        self.listener = listener  # the host subscribes once; not a client call
+
     def tick(self) -> object:
         self.ticks += 1
         if self.tick_error is not None:
