@@ -325,6 +325,8 @@ Este es el contrato de eventos.
 | `contact.accepted_again` | INFO | `peer` | `ContactsService.on_released`: un contacto activo volvió a pedirlo | ✅ |
 | `contact.rejected` / `contact.removed` | INFO | `peer` | `ContactsService` | ✅ |
 | `contact.look_alike` | WARNING | `peer`, `look_alikes` | `ContactsService`, al añadir o recibir un contacto con el mismo alias que otros | ✅ |
+| `receipt.queued` | DEBUG | `msg` (el acuse), `peer`, `count` | `ReceiptsService.send_receipts`: tras recoger del buzón | ✅ |
+| `receipt.applied` | INFO | `msg` (el acuse), `peer`, `count` (mensajes que pasan a entregados) | `ReceiptsService.on_released` | ✅ |
 | `client.tick` | DEBUG | `collected`, `stored`, `gaps`, `delivered`, `retried` | `ClientApp.tick`, solo si la vuelta hizo algo | ✅ |
 
 ### Nodos y Ray (Persona B)

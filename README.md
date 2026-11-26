@@ -47,13 +47,13 @@ adapters, so the rest of the code does not change.
 - Direct delivery between online users, falling back to the mailboxes.
 - Mailboxes replicated on 3 nodes with a 2-of-3 quorum. Any single node can fail without losing messages.
 - Collection on reconnection, acknowledgement, duplicate suppression.
+- Delivery receipts: a message shows ✓ when the mailboxes hold it and ✓✓ once it is on the receiver's device.
 - FIFO ordering with gaps ("message not available yet") and Lamport-ordered history.
 - A launcher that starts the cluster from a config file, and fault tools to kill and restart nodes.
 - A text interface for each user, and structured JSON logs for every process.
 
 **Not done yet / known limits**
 
-- **Delivery receipts through the mailbox.** A message delivered directly shows ✓✓, but one that went through a mailbox stays at ✓ even after it is read.
 - **Purging expired data on the nodes.** Expired messages are never delivered, but they are not yet deleted from the nodes' disks.
 
 ## How it works
