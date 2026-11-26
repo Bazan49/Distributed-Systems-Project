@@ -23,6 +23,7 @@ from ray.exceptions import GetTimeoutError, RayActorError
 from source.adapters.memory.crypto import FakeCrypto
 from source.adapters.system.clock import SystemClock
 from source.adapters.system.ray.ray_node import actor_name, start_service_node
+from source.application.use_cases.mailbox import MailboxPolicy
 from source.composition.logging_setup import LogSetup
 from source.domain.envelope import Envelope
 from source.domain.records import PutOutcome
@@ -210,5 +211,28 @@ def test_a_node_logs_its_start_and_its_restart_in_its_own_file(
         assert restarted["level"] == "WARNING" and restarted["node"] == node_id
         assert restarted["pid"] != started["pid"]  # a new process...
         assert restarted["run"] != started["run"]  # ...and a new run in the file
+    finally:
+        ray.kill(handle, no_restart=True)
+
+
+def test_a_node_actor_purges_what_expires_without_being_asked(
+    node_id: str, tmp_path: Path
+) -> None:
+    logs = tmp_path / "logs"
+    handle = start_service_node(
+        node_id,
+        tmp_path,
+        crypto=FakeCrypto(),
+        mailbox_policy=MailboxPolicy(ttl_ms=300),  # envelopes expire fast
+        purge_interval_ms=100,
+        log_setup=LogSetup(process=node_id, log_dir=str(logs), level="DEBUG"),
+    )
+    try:
+        assert call(handle, "deposit", make_envelope().to_bytes()).ok
+
+        purged = wait_for_event(logs / f"{node_id}.jsonl", "node.purged")
+
+        assert purged["envelopes"] == 1
+        assert call(handle, "purge_expired") == (0, 0)  # already gone from disk
     finally:
         ray.kill(handle, no_restart=True)

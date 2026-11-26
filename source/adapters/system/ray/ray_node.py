@@ -36,6 +36,25 @@ The actor runs one call at a time (Ray's default ``max_concurrency=1``). The
 services keep unsynchronised state in memory (the replay guard, the
 membership view), so do not raise the concurrency without adding locks.
 
+Purging: a node is a TEMPORARY relay, not a permanent database. Envelopes
+nobody collected (after the mailbox TTL) and expired presence records are
+already never handed out, but they would stay on disk forever, with the
+metadata of who wrote to whom and when each user was online. So the node
+deletes them itself:
+
+* once when it starts (also after a restart: whatever expired while it was
+  down goes at once);
+* then every ``purge_interval_ms`` (60 s by default), from a background
+  thread. ``None`` turns the thread off (tests purge by hand).
+
+That thread runs next to the actor's calls, so every method that touches the
+services, and the purge, holds the node's lock (``_serialized``). A failed
+purge is logged and the node goes on; the next one tries again.
+
+Logs (purge): ``node.purged`` (DEBUG), with how many ``envelopes`` and
+``records`` were deleted, only when something was; ``node.purge_failed``
+(ERROR, with the traceback) when a purge failed.
+
 Logs (see ``docs/logging.md``): an actor is its own process, so the driver's
 logging configuration does not reach it. Whoever starts the node passes
 ``log_setup`` (the composition's ``LogSetup``), and ``__init__`` runs it
@@ -46,12 +65,14 @@ the process died: the new ``pid`` and ``run`` show the restart in the file.
 
 from __future__ import annotations
 
+import functools
 import os
+import threading
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 import ray
 from ray.util import list_named_actors
@@ -70,7 +91,7 @@ from source.application.use_cases.mailbox import (
     MailboxService,
 )
 from source.application.use_cases.membership import MembershipService
-from source.domain.canonical import FormatError
+from source.domain.canonical import FormatError, is_int
 from source.domain.envelope import Envelope
 from source.domain.identifiers import UserId
 from source.domain.mailbox_access import MailboxRequest
@@ -87,8 +108,27 @@ DEFAULT_MAX_RESTARTS = -1
 MAILBOX_DB = "mailbox.db"
 DIRECTORY_DB = "directory.db"
 ACTOR_PREFIX = "service-node-"
+# How often a node deletes what expired. Expired data is never handed out in
+# the meantime: this only bounds how long it stays on disk.
+DEFAULT_PURGE_INTERVAL_MS = 60_000
 
 log = get_logger(__name__)
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _serialized(
+    method: Callable[Concatenate[ServiceNode, P], R],
+) -> Callable[Concatenate[ServiceNode, P], R]:
+    """Run ``method`` holding the node's lock (the purge thread runs beside it)."""
+
+    def locked(self: ServiceNode, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    functools.update_wrapper(locked, method)  # keep its name and docstring
+    return locked
 
 
 def _restarted_by_ray() -> bool:
@@ -181,6 +221,7 @@ class ServiceNode:
         namespace: str | None = None,
         node_lister: Callable[[], list[NodeId]] | None = None,
         log_setup: Callable[[], object] | None = None,
+        purge_interval_ms: int | None = DEFAULT_PURGE_INTERVAL_MS,
     ) -> None:
         """Open (or create) this node's databases under ``data_dir/node_id/``.
 
@@ -195,12 +236,23 @@ class ServiceNode:
         ``log_setup`` configures the logging of THIS process; it runs first.
         None leaves the logging as it is (tests, or a process already set up).
 
+        ``purge_interval_ms``: how often the background thread deletes what
+        expired. ``None``: no thread (expired data is still purged once now).
+
         Raises:
-            ValueError: ``node_id`` is not a valid NodeId.
+            ValueError: ``node_id`` is not a valid NodeId, or
+                ``purge_interval_ms`` is not a positive integer.
             StoreError: a database cannot be opened.
         """
         if log_setup is not None:
             log_setup()
+        if purge_interval_ms is not None and (
+            not is_int(purge_interval_ms) or purge_interval_ms < 1
+        ):
+            raise ValueError("purge_interval_ms must be a positive integer or None")
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._purger: threading.Thread | None = None
         self._node = NodeId(node_id)
         folder = Path(data_dir) / self._node.value
         self._data_dir = str(folder)
@@ -224,6 +276,15 @@ class ServiceNode:
             log.warning("actor.restarted", node=self._node)
         else:
             log.info("actor.started", node=self._node)
+        self._purge_safely()  # what expired while this node was down goes now
+        if purge_interval_ms is not None:
+            self._purger = threading.Thread(
+                target=self._purge_loop,
+                args=(purge_interval_ms / 1000,),
+                name=f"purge-{self._node.value}",
+                daemon=True,
+            )
+            self._purger.start()
 
     # ---- replies ----
     def _ok(self, value: Any = None) -> NodeReply[Any]:
@@ -241,6 +302,7 @@ class ServiceNode:
         return self._ok()
 
     # ---- mailbox ----
+    @_serialized
     def deposit(self, envelope: bytes) -> NodeReply[PutOutcome]:
         """Keep the envelope (``Envelope.to_bytes()``) for its receiver.
 
@@ -252,6 +314,7 @@ class ServiceNode:
             return self._refuse(f"malformed envelope: {exc}")
         return self._ok(self._mailbox.deposit(parsed))
 
+    @_serialized
     def collect(self, request: bytes) -> NodeReply[list[bytes]]:
         """Pending envelopes of the receiver, as bytes, oldest first.
 
@@ -266,6 +329,7 @@ class ServiceNode:
             return self._refuse(exc.reason.value)
         return self._ok([e.to_bytes() for e in envelopes])
 
+    @_serialized
     def acknowledge(self, request: bytes) -> NodeReply[int]:
         """Delete the listed envelopes; the value is how many were still here."""
         try:
@@ -278,6 +342,7 @@ class ServiceNode:
         return self._ok(removed)
 
     # ---- directory ----
+    @_serialized
     def publish_record(self, record: DirectoryRecord) -> NodeReply[bool]:
         """Store a signed record if ``DirectoryService`` accepts it."""
         if not isinstance(record, DirectoryRecord):
@@ -287,6 +352,7 @@ class ServiceNode:
             return self._refuse(outcome.value)
         return self._ok(True)
 
+    @_serialized
     def resolve_record(self, user_id: str) -> NodeReply[DirectoryRecord | None]:
         """The current record of ``user_id`` (its hex value), or None if unknown/expired."""
         try:
@@ -296,15 +362,37 @@ class ServiceNode:
         return self._ok(self._directory.resolve(user))
 
     # ---- maintenance ----
+    @_serialized
     def purge_expired(self) -> tuple[int, int]:
         """Physically delete expired envelopes and records: ``(envelopes, records)``.
 
-        Meant to be called periodically. Until then expired data is never
-        returned, it only takes disk space.
+        The node calls it itself (on start and every ``purge_interval_ms``);
+        it can also be called directly. Until then expired data is never
+        returned, it only takes disk space. Logs ``node.purged`` if it
+        deleted something.
+
+        Raises:
+            StoreError: a database failed.
         """
-        return self._mailbox.purge_expired(), self._directory.purge_expired()
+        envelopes = self._mailbox.purge_expired()
+        records = self._directory.purge_expired()
+        if envelopes or records:
+            log.debug("node.purged", envelopes=envelopes, records=records)
+        return envelopes, records
+
+    def _purge_safely(self) -> None:
+        """Purge; a failure is logged and the node goes on (the next one retries)."""
+        try:
+            self.purge_expired()
+        except Exception:
+            log.exception("node.purge_failed", node=self._node)
+
+    def _purge_loop(self, interval_s: float) -> None:
+        while not self._stop.wait(interval_s):
+            self._purge_safely()
 
     # ---- membership (this node's view of its peers) ----
+    @_serialized
     def report_peer(self, peer: str, answered: bool) -> None:
         """Record the outcome of talking to another node.
 
@@ -316,16 +404,19 @@ class ServiceNode:
         else:
             self._membership.report_failure(node)
 
+    @_serialized
     def peer_state(self, peer: str) -> str:
         """``"alive"``, ``"suspect"`` or ``"dead"``. A peer never heard of is suspect."""
         return self._membership.get_state(NodeId(peer)).value
 
+    @_serialized
     def active_peers(self, candidates: list[str]) -> list[str]:
         """``candidates`` that this node does not consider dead, in the same order."""
         nodes = [NodeId(c) for c in candidates]
         return [n.value for n in self._membership.get_active_nodes(nodes)]
 
     # ---- discovery ----
+    @_serialized
     def list_nodes(self) -> NodeReply[list[str]]:
         """The service nodes available now, as node ids (task 2.4).
 
@@ -339,9 +430,13 @@ class ServiceNode:
 
     # ---- lifecycle ----
     def close(self) -> None:
-        """Close both databases (a clean shutdown; a crash loses nothing either)."""
-        self._mailbox_store.close()
-        self._directory_store.close()
+        """Stop purging and close both databases (a crash loses nothing either)."""
+        self._stop.set()
+        if self._purger is not None and self._purger is not threading.current_thread():
+            self._purger.join()
+        with self._lock:
+            self._mailbox_store.close()
+            self._directory_store.close()
 
 
 # The Ray actor: the same class, restarted by Ray if its process dies.

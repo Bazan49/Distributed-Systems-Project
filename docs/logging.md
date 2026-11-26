@@ -341,6 +341,8 @@ Este es el contrato de eventos.
 | `mailbox.deposited` | DEBUG | `msg`, `outcome` (`stored`/`already_present`) | `MailboxService` (nodo) | ✅ |
 | `mailbox.collected` / `mailbox.acknowledged` | DEBUG | `user`, `count` | `MailboxService` (nodo) | ✅ |
 | `mailbox.request_refused` | WARNING | `user`, `reason` (`replayed`, `invalid_signature`, `stale`, `bad_identity`, `wrong_action`) | `MailboxService` (nodo) | ✅ |
+| `node.purged` | DEBUG | `envelopes`, `records` (cuántos borró) | `ServiceNode.purge_expired`: al arrancar y cada `purge_interval_ms` (60 s). Solo si borró algo | ✅ |
+| `node.purge_failed` | ERROR | (traza) | `ServiceNode`, si una purga falla: el nodo sigue y la siguiente lo reintenta | ✅ |
 | `actor.started` / `actor.restarted` | INFO / WARNING | `node` | `ServiceNode.__init__` (actor del nodo) | ✅ |
 | `actor.call_timeout` | WARNING | `node`, `method`, `timeout_ms` | `RayNodeGateway`, por cada nodo que no respondió a tiempo | ✅ |
 
