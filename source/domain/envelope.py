@@ -31,6 +31,12 @@ from source.domain.canonical import (
 from source.domain.identifiers import ConversationId, MessageId, UserId
 
 ENVELOPE_VERSION = 1
+CONTENT_VERSION = 2
+"""Version of the encrypted content. Independent of the envelope: nodes never
+see the content, so changing it does not change what they validate."""
+
+MAX_LAMPORT = 2**53 - 1
+"""Largest Lamport timestamp: the largest integer every JSON reader keeps exact."""
 
 MAX_BODY_BYTES = 16 * 1024
 MAX_RECEIPT_IDS = 256  # message ids confirmed by one receipt
@@ -85,6 +91,11 @@ class MessageContent:
     order messages and detect gaps. Every kind, receipts included, uses it. It
     lives here and not in the envelope so that mailboxes cannot observe the
     pace or order of a conversation.
+
+    ``lamport`` is the message's Lamport timestamp in its conversation: greater
+    than that of every message its sender had stored when writing it. Both
+    participants order the history by it (see ``ClientApp.history``), so a
+    reply always comes after what it answers, whatever the wall clocks say.
     """
 
     kind: MessageKind
@@ -92,6 +103,7 @@ class MessageContent:
     seq: int
     sent_at_ms: int
     body: str
+    lamport: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, MessageKind):
@@ -102,6 +114,8 @@ class MessageContent:
             raise FormatError("seq must be an integer >= 1")
         if not is_int(self.sent_at_ms) or self.sent_at_ms < 0:
             raise FormatError("sent_at_ms must be an integer >= 0")
+        if not is_int(self.lamport) or not 1 <= self.lamport <= MAX_LAMPORT:
+            raise FormatError(f"lamport must be an integer from 1 to {MAX_LAMPORT}")
         if not isinstance(self.body, str):
             raise FormatError("body must be text")
         try:
@@ -129,10 +143,11 @@ class MessageContent:
         """Bytes handed to the crypto port to be encrypted."""
         return canonical_json(
             {
-                "v": ENVELOPE_VERSION,
+                "v": CONTENT_VERSION,
                 "kind": self.kind.value,
                 "conv": self.conversation_id.value,
                 "seq": self.seq,
+                "lamport": self.lamport,
                 "sent_at_ms": self.sent_at_ms,
                 "body": self.body,
             }
@@ -142,8 +157,8 @@ class MessageContent:
     def from_bytes(cls, data: bytes) -> MessageContent:
         """Rebuild the content from bytes that have already been decrypted."""
         obj = parse_json_object(data, MAX_CIPHERTEXT_BYTES)
-        require_keys(obj, {"v", "kind", "conv", "seq", "sent_at_ms", "body"})
-        if obj["v"] != ENVELOPE_VERSION:
+        require_keys(obj, {"v", "kind", "conv", "seq", "lamport", "sent_at_ms", "body"})
+        if obj["v"] != CONTENT_VERSION:
             raise FormatError("unsupported content version")
         try:
             return cls(
@@ -152,6 +167,7 @@ class MessageContent:
                 seq=obj["seq"],
                 sent_at_ms=obj["sent_at_ms"],
                 body=obj["body"],
+                lamport=obj["lamport"],
             )
         except ValueError as exc:
             if isinstance(exc, FormatError):

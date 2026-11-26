@@ -43,16 +43,30 @@ def test_ids_and_times_are_short() -> None:
 
 
 def test_a_conversation_shows_both_sides_statuses_and_gaps() -> None:
+    def entry(
+        kind: EntryKind,
+        seq: int,
+        minute: int,
+        body: str = "",
+        status: OutgoingStatus | None = None,
+    ) -> HistoryEntry:
+        # By name: HistoryEntry gains fields (``lamport``), and a value passed
+        # by position could silently land in the wrong one.
+        return HistoryEntry(
+            kind=kind,
+            seq=seq,
+            sent_at_ms=NOON + minute * 60_000,
+            lamport=minute + 1,
+            body=body,
+            status=status,
+        )
+
     entries = [
-        HistoryEntry(EntryKind.RECEIVED, 1, NOON, "hola"),
-        HistoryEntry(EntryKind.MISSING, 2, NOON),
-        HistoryEntry(EntryKind.RECEIVED, 3, NOON + 60_000, "¿estás?"),
-        HistoryEntry(
-            EntryKind.SENT, 1, NOON + 120_000, "sí", status=OutgoingStatus.DELIVERED
-        ),
-        HistoryEntry(
-            EntryKind.SENT, 2, NOON + 180_000, "¿y tú?", status=OutgoingStatus.QUEUED
-        ),
+        entry(EntryKind.RECEIVED, 1, 0, body="hola"),
+        entry(EntryKind.MISSING, 2, 0),
+        entry(EntryKind.RECEIVED, 3, 1, body="¿estás?"),
+        entry(EntryKind.SENT, 1, 2, body="sí", status=OutgoingStatus.DELIVERED),
+        entry(EntryKind.SENT, 2, 3, body="¿y tú?", status=OutgoingStatus.QUEUED),
     ]
     assert history_lines(entries, "Bob", UTC) == [
         "  [12:00] Bob: hola",

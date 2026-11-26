@@ -29,7 +29,7 @@ import sqlite3
 
 from source.application.ports.errors import StoreError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 0x4D53474C  # "MSGL"
 
 _V1: tuple[str, ...] = (
@@ -152,10 +152,32 @@ _V2: tuple[str, ...] = (
     """,
 )
 
+# Version 3: the Lamport timestamp of every message, and the indexes that make
+# ``max_lamport`` read one index entry per table instead of scanning. Messages
+# stored before have none; ``seq`` takes its place, which is a valid timestamp
+# (>= 1) and grows with each sender's messages.
+_V3: tuple[str, ...] = (
+    "ALTER TABLE received_messages ADD COLUMN lamport INTEGER NOT NULL DEFAULT 0",
+    "UPDATE received_messages SET lamport = seq",
+    "ALTER TABLE outgoing_messages ADD COLUMN lamport INTEGER NOT NULL DEFAULT 0",
+    "UPDATE outgoing_messages SET lamport = seq",
+    "ALTER TABLE inbound_pending ADD COLUMN lamport INTEGER NOT NULL DEFAULT 0",
+    "UPDATE inbound_pending SET lamport = seq",
+    """
+    CREATE INDEX idx_received_lamport
+        ON received_messages (conversation_id, lamport)
+    """,
+    """
+    CREATE INDEX idx_outgoing_lamport
+        ON outgoing_messages (conversation_id, lamport)
+    """,
+)
+
 # _MIGRATIONS[n] upgrades a database from version n to n + 1.
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     0: _V1,
     1: _V2,
+    2: _V3,
 }
 
 

@@ -75,6 +75,7 @@ def craft(
     conversation: ConversationId | None = None,
     plaintext: bytes | None = None,
     message_id: MessageId | None = None,
+    lamport: int | None = None,
 ) -> Envelope:
     """Build an envelope by hand, so every kind of bad envelope can be made."""
     content = MessageContent(
@@ -83,6 +84,7 @@ def craft(
         seq,
         BASE_TIME_MS,
         f"m{seq}" if body is None else body,
+        seq if lamport is None else lamport,
     )
     ciphertext = CRYPTO.encrypt_for(
         (encrypt_for or receiver).keys.public_key,
@@ -187,9 +189,20 @@ def test_a_valid_envelope_is_stored_and_confirmed(
         body="hola",
         sent_at_ms=BASE_TIME_MS,
         received_at_ms=clock.now_ms(),
+        lamport=1,
     )
     assert [d.item for d in result.released] == [stored]
     assert store.has_received(envelope.message_id)
+
+
+def test_the_senders_lamport_timestamp_is_kept_with_the_message(
+    service: ReceiveMessagesService, store: MemoryLocalStore
+) -> None:
+    receive(service, craft(seq=1, lamport=17))
+
+    (stored,) = store.list_received(FROM_BOB)
+    assert stored.lamport == 17
+    assert store.max_lamport(FROM_BOB) == 17
 
 
 # ---------------- duplicates ----------------
