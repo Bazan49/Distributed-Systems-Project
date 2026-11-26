@@ -224,6 +224,8 @@ __marimo__/
 
 # Local project data (SQLite and tests)
 data/
+# Personal variants of the configuration (config/cluster.json is the default)
+config/*.local.json
 *.db
 *.sqlite
 *.sqlite3

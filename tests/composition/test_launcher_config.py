@@ -11,6 +11,7 @@ import pytest
 from source.adapters.system.ray.ray_client import device_actor_name
 from source.composition.launcher import (
     DEFAULT_CLIENT_FACTORY,
+    DEFAULT_CONFIG,
     DEFAULT_NAMESPACE,
     ConfigError,
     LaunchError,
@@ -74,7 +75,7 @@ def test_a_full_configuration_is_read_as_written() -> None:
     assert cfg.clients[1].options == {"kdf": "fast"}
     assert cfg.data_dir == Path("/var/lib/msg")  # absolute: kept
     assert cfg.node_dir() == Path("/var/lib/msg/nodes")
-    assert cfg.client_dir("bob") == Path("/var/lib/msg/clients/bob")
+    assert cfg.devices_dir() == Path("/var/lib/msg/devices")
     assert cfg.ray_address == "ray://head:10001"
 
 
@@ -125,10 +126,10 @@ def test_load_config_reports_a_missing_or_broken_file(tmp_path: Path) -> None:
         load_config(broken)
 
 
-def test_the_example_configuration_of_the_repository_is_valid() -> None:
-    example = Path(__file__).parents[2] / "config" / "cluster.example.json"
-    cfg = load_config(example)
-    assert len(cfg.nodes) == 3 and len(cfg.clients) == 2
+def test_the_default_configuration_of_the_repository_is_valid() -> None:
+    cfg = load_config(Path(__file__).parents[2] / DEFAULT_CONFIG)
+    # Only the infrastructure: users start their own devices from the CLI.
+    assert len(cfg.nodes) == 3 and cfg.clients == ()
 
 
 def test_resolve_factory_finds_a_function_or_explains_why_not() -> None:
@@ -173,3 +174,13 @@ def test_the_command_fails_cleanly_on_a_bad_configuration(
     path.write_text(json.dumps({"nodes": []}), encoding="utf-8")
     assert main([str(path)]) == 2
     assert "ERROR" in capsys.readouterr().err
+
+
+def test_without_arguments_the_launcher_reads_the_default_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)  # a folder without config/cluster.json
+    assert main([]) == 2
+    assert str(DEFAULT_CONFIG) in capsys.readouterr().err
