@@ -122,9 +122,11 @@ def test_the_clients_are_the_real_client_actor_and_start_logged_out(
         assert call(client, "logged_in") is False
 
 
-def test_each_client_keeps_its_store_in_its_folder(running: RunningCluster) -> None:
+def test_each_client_keeps_its_store_in_the_devices_folder(
+    running: RunningCluster,
+) -> None:
     for client_id in ("alice", "bob"):
-        store = running.config.client_dir(client_id) / f"{client_id}.db"
+        store = running.config.devices_dir() / f"{client_id}.db"
         assert store.exists()
 
 
@@ -332,7 +334,7 @@ def test_one_command_starts_3_nodes_and_2_clients_and_stops_them(
         for node in NODES:
             assert (tmp_path / "state" / "nodes" / node / MAILBOX_DB).exists()
         for client in ("alice", "bob"):
-            assert (tmp_path / "state" / "clients" / client / f"{client}.db").exists()
+            assert (tmp_path / "state" / "devices" / f"{client}.db").exists()
 
         proc.send_signal(signal.SIGINT)  # Ctrl+C
 

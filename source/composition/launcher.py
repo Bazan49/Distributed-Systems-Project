@@ -2,7 +2,12 @@
 
 Usage::
 
-    python -m source.composition.launcher cluster.json
+    python -m source.composition.launcher                       # config/cluster.json
+    python -m source.composition.launcher config/other.json
+
+The configuration file is the single description of a deployment: the
+command-line interface (``source.composition.cli``) reads the same file, so
+both agree on the namespace, the seeds and where every device keeps its data.
 
 It starts every node, then every client, prints ``READY`` and waits. Ctrl+C
 (SIGINT) or SIGTERM stops everything: clients first, then nodes.
@@ -31,8 +36,9 @@ Key                Required  Meaning
 ``namespace``      no        Ray namespace of every actor (default ``mensajeria``).
 ``data_dir``       no        Folder of the SQLite files, relative to the config
                              file (default ``data``). Node ``x`` uses
-                             ``<data_dir>/nodes/x/``, client ``y`` uses
-                             ``<data_dir>/clients/y/``.
+                             ``<data_dir>/nodes/x/``; device ``y`` uses
+                             ``<data_dir>/devices/y.db``, whoever starts it
+                             (this launcher or the interface).
 ``seeds``          no        Initial nodes the clients are told about (default:
                              every node). Must be nodes of the list.
 ``clients``        no        Clients to start: ``id`` (1 to 32 of ``a-z``,
@@ -114,6 +120,8 @@ from source.composition.logging_setup import (
 from source.composition.ray_network import start_ray_client
 from source.domain.node_id import NodeId
 
+DEFAULT_CONFIG = Path("config") / "cluster.json"
+"""The configuration used when none is given, by the launcher and the interface."""
 DEFAULT_NAMESPACE = "mensajeria"
 DEFAULT_DATA_DIR = "data"
 DEFAULT_CLIENT_FACTORY = "source.composition.launcher:start_ray_device"
@@ -177,8 +185,13 @@ class LaunchConfig:
     def node_dir(self) -> Path:
         return self.data_dir / "nodes"
 
-    def client_dir(self, client_id: str) -> Path:
-        return self.data_dir / "clients" / client_id
+    def devices_dir(self) -> Path:
+        """Folder of every device's store, ``<device>.db``.
+
+        The same for a device started here and one started by the interface:
+        a device name always means the same account.
+        """
+        return self.data_dir / "devices"
 
 
 def _str(value: Any, what: str) -> str:
@@ -336,7 +349,7 @@ def start_client(config: LaunchConfig, spec: ClientSpec, factory: ClientFactory)
     """Start the actor of one client through the factory (always the same arguments)."""
     return factory(
         spec.client_id,
-        str(config.client_dir(spec.client_id)),
+        str(config.devices_dir()),
         seeds=[s.value for s in config.seeds],
         namespace=config.namespace,
         log_dir=str(config.logs_dir()),
@@ -468,7 +481,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m source.composition.launcher",
         description="Start the service nodes and clients of a configuration file.",
     )
-    parser.add_argument("config", help="path of the JSON configuration file")
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=str(DEFAULT_CONFIG),
+        help=f"path of the JSON configuration file (default: {DEFAULT_CONFIG})",
+    )
     parser.add_argument(
         "--ready-timeout-ms",
         type=int,

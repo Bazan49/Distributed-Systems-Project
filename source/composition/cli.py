@@ -1,20 +1,25 @@
 """Open the command-line interface of one device, joined to a running cluster.
 
-Usage (with the cluster running: ``ray start --head`` and the launcher)::
+Usage (with the launcher running)::
 
     python -m source.composition.cli --device alice
-    python -m source.composition.cli --device bob --seeds node-1,node-2
+    python -m source.composition.cli --device bob --config config/other.json
+
+It reads the SAME configuration file as the launcher (``config/cluster.json``
+by default), so both agree on the Ray namespace, the seeds, the log folder and
+where each device keeps its data. Nothing of the deployment is repeated here.
 
 What it does:
 
-1. Configures this process's log: ``<log-dir>/cli-<device>.jsonl``.
-2. Joins the Ray cluster (``--address``, default ``auto``) and checks that the
-   service nodes answer.
+1. Configures this process's log: ``<log_dir>/cli-<device>.jsonl``.
+2. Joins the Ray cluster (the configuration's ``ray_address``, else the one
+   running on this machine) and checks that the service nodes answer.
 3. Finds the client actor of the device (``client-device-<device>``). If the
-   launcher already started it, it is used as it is, with its own store. If
-   not, it is started here, with its store in ``<data-dir>/<device>.db``;
-   then it belongs to this process and stops when the interface is closed
-   (the device turns off; its account and history stay in the store).
+   launcher already started it, it is used as it is. If not, it is started
+   here; then it belongs to this process and stops when the interface is
+   closed (the device turns off; its account and history stay in the store).
+   Either way the store is ``<data_dir>/devices/<device>.db``: a device name
+   is one account, whoever starts it.
 4. Runs the interface (``source.adapters.cli``) until the user exits.
 
 Exit codes: 0 normal, 2 the cluster or the nodes are not reachable.
@@ -23,7 +28,6 @@ Exit codes: 0 normal, 2 the cluster or the nodes are not reachable.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -36,17 +40,15 @@ from source.adapters.cli.console import TerminalConsole
 from source.adapters.system.ray.ray_gateway import DiscoveryError, RayNodeGateway
 from source.adapters.system.ray.remote_client import RemoteClient
 from source.composition.client import ClientSettings, KdfStrength, valid_device_name
-from source.composition.logging_setup import (
-    DEFAULT_LOG_DIR,
-    DIR_ENV_VAR,
-    configure_logging,
-)
+from source.composition.launcher import DEFAULT_CONFIG, ConfigError, load_config
+from source.composition.logging_setup import configure_logging
 from source.composition.ray_network import start_ray_client
 from source.domain.node_id import NodeId
 
 __all__ = ["CliOptions", "main", "parse_args"]
 
-DEFAULT_DATA_DIR = Path("data") / "devices"
+DEFAULT_RAY_ADDRESS = "auto"
+"""Without ``ray_address`` in the configuration: the cluster of this machine."""
 
 
 @dataclass(frozen=True)
@@ -68,19 +70,9 @@ def parse_args(argv: Sequence[str] | None = None) -> CliOptions:
     )
     parser.add_argument("--device", required=True, help="device name, e.g. alice")
     parser.add_argument(
-        "--seeds", default="node-1,node-2", help="comma-separated initial nodes"
-    )
-    parser.add_argument("--namespace", default="mensajeria")
-    parser.add_argument("--address", default="auto", help="Ray address")
-    parser.add_argument(
-        "--data-dir",
-        default=str(DEFAULT_DATA_DIR),
-        help="folder of the device's store, if this command starts its client",
-    )
-    parser.add_argument(
-        "--log-dir",
-        default=None,
-        help="folder of the logs (default: P08_LOG_DIR or logs)",
+        "--config",
+        default=str(DEFAULT_CONFIG),
+        help=f"the launcher's configuration file (default: {DEFAULT_CONFIG})",
     )
     parser.add_argument(
         "--fast-kdf",
@@ -95,19 +87,16 @@ def parse_args(argv: Sequence[str] | None = None) -> CliOptions:
             "starting with a letter or digit"
         )
     try:
-        seeds = tuple(NodeId(s.strip()) for s in args.seeds.split(",") if s.strip())
-    except ValueError as exc:
-        parser.error(f"--seeds: {exc}")
-    if not seeds:
-        parser.error("--seeds: at least one node")
-    log_dir = args.log_dir or os.environ.get(DIR_ENV_VAR) or str(DEFAULT_LOG_DIR)
+        config = load_config(args.config)
+    except ConfigError as exc:
+        parser.error(f"--config: {exc}")
     return CliOptions(
         device=args.device,
-        seeds=seeds,
-        namespace=args.namespace,
-        address=args.address,
-        data_dir=Path(args.data_dir).resolve(),
-        log_dir=Path(log_dir).resolve(),
+        seeds=config.seeds,
+        namespace=config.namespace,
+        address=config.ray_address or DEFAULT_RAY_ADDRESS,
+        data_dir=config.devices_dir().resolve(),
+        log_dir=config.logs_dir(),
         kdf=KdfStrength.FAST if args.fast_kdf else KdfStrength.SECURE,
     )
 
@@ -123,9 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ConnectionError:
         print(
-            "No encuentro el clúster de Ray. Arráncalo antes:\n"
-            "  ray start --head\n"
-            "  python -m source.composition.launcher <configuración>",
+            "No encuentro el clúster de Ray. Arranca antes el sistema:\n"
+            "  python -m source.composition.launcher",
             file=sys.stderr,
         )
         return 2

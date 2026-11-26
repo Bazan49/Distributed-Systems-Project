@@ -1,0 +1,7 @@
+{
+  "namespace": "mensajeria",
+  "data_dir": "../data/cluster",
+  "nodes": ["node-1", "node-2", "node-3"],
+  "seeds": ["node-1", "node-2"],
+  "clients": []
+}
