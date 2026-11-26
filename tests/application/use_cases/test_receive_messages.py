@@ -205,6 +205,21 @@ def test_the_senders_lamport_timestamp_is_kept_with_the_message(
     assert store.max_lamport(FROM_BOB) == 17
 
 
+def test_the_result_names_the_sender_and_kind_of_a_readable_envelope(
+    service: ReceiveMessagesService,
+) -> None:
+    result = receive(service, craft(seq=1, kind=MessageKind.TEXT))
+    assert (result.sender, result.kind) == (BOB.user_id, MessageKind.TEXT)
+
+
+def test_a_refused_envelope_reveals_neither_sender_nor_kind(
+    service: ReceiveMessagesService,
+) -> None:
+    result = receive(service, craft(seq=1, sign_with=CARLA))
+    assert result.status is ReceiveStatus.BAD_SIGNATURE
+    assert (result.sender, result.kind) == (None, None)
+
+
 # ---------------- duplicates ----------------
 
 

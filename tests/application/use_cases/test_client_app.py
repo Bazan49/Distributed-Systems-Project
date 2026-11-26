@@ -482,6 +482,62 @@ def test_history_limit(world: World) -> None:
         alice.history(bob.profile().user_id, limit=0)
 
 
+# ---------------- delivery receipts ----------------
+
+
+def receipts_in_outbox(app: ClientApp) -> int:
+    return sum(m.kind is MessageKind.RECEIPT for m in app._store.list_outgoing())
+
+
+def test_a_message_collected_from_the_mailboxes_ends_up_delivered(
+    world: World,
+) -> None:
+    """Bob was offline: the message waits in the mailboxes (✓). When he
+    collects it, his receipt reaches Alice and it becomes delivered (✓✓)."""
+    alice, bob = world.user("alice"), world.user("bob")
+    befriend(alice, bob)
+    world.pass_time(2_000, alice, bob)
+    bob_id = bob.profile().user_id
+    bob.logout()
+
+    sent = alice.send(bob_id, "¿lo recibiste?")
+    assert sent.status is OutgoingStatus.ACCEPTED
+
+    bob.login(PASSWORD)
+    world.pass_time(20_000, alice, bob)
+
+    [entry] = [e for e in alice.history(bob_id) if e.body == "¿lo recibiste?"]
+    assert entry.status is OutgoingStatus.DELIVERED
+    assert receipts_in_outbox(bob) == 1
+    assert receipts_in_outbox(alice) == 0  # a receipt is never answered
+
+
+def test_messages_delivered_directly_need_no_receipt(world: World) -> None:
+    alice, bob = world.user("alice"), world.user("bob")
+    befriend(alice, bob)
+    world.pass_time(2_000, alice, bob)
+
+    sent = alice.send(bob.profile().user_id, "hola")
+    world.pass_time(20_000, alice, bob)
+
+    assert sent.status is OutgoingStatus.DELIVERED
+    assert receipts_in_outbox(bob) == 0
+
+
+def test_receipts_are_not_shown_in_the_history(world: World) -> None:
+    alice, bob = world.user("alice"), world.user("bob")
+    befriend(alice, bob)
+    world.pass_time(2_000, alice, bob)
+    alice_id, bob_id = alice.profile().user_id, bob.profile().user_id
+    bob.logout()
+    alice.send(bob_id, "uno")
+    bob.login(PASSWORD)
+    world.pass_time(20_000, alice, bob)
+
+    assert texts(alice.history(bob_id)) == [(EntryKind.SENT, "uno")]
+    assert texts(bob.history(alice_id)) == [(EntryKind.RECEIVED, "uno")]
+
+
 # ---------------- Lamport order ----------------
 
 
