@@ -53,10 +53,6 @@ dentro de unos pocos adaptadores, así que el resto del código no cambia.
 - Un lanzador que levanta el clúster desde un archivo de configuración, y herramientas para tumbar y reiniciar nodos.
 - Una interfaz de texto para cada usuario, y logs estructurados en JSON de cada proceso.
 
-**Pendiente / límites conocidos**
-
-- **Borrado de datos caducados en los nodos.** Los mensajes caducados nunca se entregan, pero todavía no se borran del disco de los nodos.
-
 ## Cómo funciona
 
 ```

@@ -52,10 +52,6 @@ adapters, so the rest of the code does not change.
 - A launcher that starts the cluster from a config file, and fault tools to kill and restart nodes.
 - A text interface for each user, and structured JSON logs for every process.
 
-**Not done yet / known limits**
-
-- **Purging expired data on the nodes.** Expired messages are never delivered, but they are not yet deleted from the nodes' disks.
-
 ## How it works
 
 ```
