@@ -15,7 +15,9 @@ The periodic work of a connected client lives in ``tick()``, in this order:
 
 1. refresh the membership view, so the next calls ask live nodes;
 2. renew the presence record if its lease is ending;
-3. collect from the mailboxes, receive, and acknowledge what was settled;
+3. collect from the mailboxes, receive, queue receipts for the texts that
+   arrived (so their senders see them delivered), and acknowledge to the
+   nodes what was settled;
 4. skip ordering gaps whose deadline passed;
 5. deliver whatever is due in the outbox (including the answers that
    receiving may have queued, such as contact acceptances).
@@ -70,6 +72,7 @@ from source.application.use_cases.delivery import (
 from source.application.use_cases.identity import IdentityService, UnlockedIdentity
 from source.application.use_cases.membership import MembershipService
 from source.application.use_cases.quorum import QuorumClient, QuorumPolicy
+from source.application.use_cases.receipts import ReceiptsService
 from source.application.use_cases.receive_messages import (
     BatchResult,
     GapReport,
@@ -269,8 +272,14 @@ class ClientApp:
         )
         self._sender = SendMessageService(crypto, store, clock)
         self._contacts = ContactsService(crypto, store, clock, self._sender)
+        self._receipts = ReceiptsService(store, self._sender)
         self._receiver = ReceiveMessagesService(
-            crypto, store, clock, ordering, contacts=self._contacts
+            crypto,
+            store,
+            clock,
+            ordering,
+            contacts=self._contacts,
+            receipts=self._receipts,
         )
         self._session: _Session | None = None
         self._last_run_ms: dict[str, int] = {}
@@ -528,6 +537,9 @@ class ClientApp:
         )
         envelopes = self._quorum.collect(request).envelopes
         batch = self._receiver.receive_batch(identity, envelopes)
+        # Before acknowledging: if the client stops in between, the envelopes
+        # are collected again and only then dropped as duplicates.
+        self._receipts.send_receipts(identity, batch.results)
         ids = batch.to_acknowledge
         for start in range(0, len(ids), MAX_ACK_IDS):
             self._quorum.acknowledge(

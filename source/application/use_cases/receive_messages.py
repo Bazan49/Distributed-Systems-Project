@@ -54,7 +54,7 @@ from source.application.ports.local_store import LocalStorePort
 from source.application.use_cases.identity import UnlockedIdentity
 from source.domain.canonical import FormatError
 from source.domain.contacts import Contact
-from source.domain.envelope import Envelope, MessageContent
+from source.domain.envelope import Envelope, MessageContent, MessageKind
 from source.domain.identifiers import ConversationId, MessageId, UserId
 from source.domain.messages import ReceivedMessage
 from source.domain.ordering import (
@@ -68,6 +68,7 @@ __all__ = [
     "BatchResult",
     "ContactGate",
     "GapReport",
+    "ReceiptGate",
     "ReceiveMessagesService",
     "ReceiveResult",
     "ReceiveStatus",
@@ -92,6 +93,16 @@ class ContactGate(Protocol):
         sender as unknown. Must not raise for anything a peer can send.
         """
         ...
+
+    def on_released(
+        self, session: UnlockedIdentity, messages: Sequence[ReceivedMessage]
+    ) -> None:
+        """Called with messages about to be stored, in order. Must be idempotent."""
+        ...
+
+
+class ReceiptGate(Protocol):
+    """What the receive pipeline needs from the receipts use case."""
 
     def on_released(
         self, session: UnlockedIdentity, messages: Sequence[ReceivedMessage]
@@ -180,11 +191,18 @@ class ReceiveResult:
     ``released`` holds the messages stored in the history by THIS call, in
     the order they were stored (``late`` marks the out-of-order ones). They
     may include earlier messages that were waiting for this one.
+
+    ``sender`` and ``kind`` are those of the envelope itself, known only once
+    it was verified and decrypted; None for envelopes refused or skipped
+    before that (not for me, duplicate, unknown sender, bad signature,
+    unreadable).
     """
 
     message_id: MessageId
     status: ReceiveStatus
     released: tuple[Delivery[ReceivedMessage], ...] = ()
+    sender: UserId | None = None
+    kind: MessageKind | None = None
 
     @property
     def acknowledge(self) -> bool:
@@ -244,16 +262,19 @@ class ReceiveMessagesService:
         clock: ClockPort,
         policy: OrderingPolicy | None = None,
         contacts: ContactGate | None = None,
+        receipts: ReceiptGate | None = None,
     ) -> None:
         """Args:
         contacts: the contacts use case. Without it, every unknown sender
             stays unknown and contact messages are only stored.
+        receipts: the receipts use case. Without it, receipts are only stored.
         """
         self._crypto = crypto
         self._store = store
         self._clock = clock
         self._policy = policy if policy is not None else OrderingPolicy()
         self._contacts = contacts
+        self._receipts = receipts
         self._streams: dict[_StreamKey, InboundStream[ReceivedMessage]] = {}
 
     # receiving
@@ -329,7 +350,13 @@ class ReceiveMessagesService:
         if result.arrival in _CHANGES_STREAM:
             self._commit(session, key, stream, result.released)
         # 8: the status carries whether to confirm.
-        return ReceiveResult(message_id, _FROM_ARRIVAL[result.arrival], result.released)
+        return ReceiveResult(
+            message_id,
+            _FROM_ARRIVAL[result.arrival],
+            result.released,
+            sender=envelope.sender,
+            kind=content.kind,
+        )
 
     def receive_batch(
         self, session: UnlockedIdentity, envelopes: Iterable[Envelope]
@@ -425,9 +452,9 @@ class ReceiveMessagesService:
         stream: InboundStream[ReceivedMessage],
         released: Sequence[Delivery[ReceivedMessage]],
     ) -> None:
-        """Hand the released messages to the gate, then persist one step of ``stream``.
+        """Hand the released messages to the gates, then persist one step of ``stream``.
 
-        ``offer``/``expire`` already changed the stream in memory. If the
+        ``offer``/``expire`` already changed the stream in memory. If a
         gate or the commit fails, memory is ahead of the disk, so the stream
         is dropped: the next envelope reloads it from the last committed
         state, and the unconfirmed envelope will simply be received again.
@@ -436,6 +463,8 @@ class ReceiveMessagesService:
         try:
             if self._contacts is not None and messages:
                 self._contacts.on_released(session, messages)
+            if self._receipts is not None and messages:
+                self._receipts.on_released(session, messages)
             self._store.commit_inbound(key[0], key[1], messages, stream.snapshot())
         except BaseException:
             self._streams.pop(key, None)
