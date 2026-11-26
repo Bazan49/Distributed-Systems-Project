@@ -41,12 +41,12 @@ It depends only on ports, the other use cases and the domain: no Ray, no SQLite.
 
 from __future__ import annotations
 
-import heapq
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.local_store import LocalStorePort
@@ -102,6 +102,8 @@ __all__ = [
     "Profile",
     "TickReport",
 ]
+
+log = get_logger(__name__)
 
 
 ChangeListener = Callable[[], None]
@@ -187,11 +189,16 @@ class HistoryEntry:
 
     ``status`` is set only for SENT entries; ``message_id`` for every entry
     except MISSING ones; ``body`` is empty for MISSING ones.
+
+    ``lamport`` is the message's Lamport timestamp, the history's order. A
+    MISSING entry takes the one of the message that follows it, since its own
+    is unknown until it arrives.
     """
 
     kind: EntryKind
     seq: int
     sent_at_ms: int
+    lamport: int
     body: str = ""
     status: OutgoingStatus | None = None
     message_id: MessageId | None = None
@@ -320,8 +327,10 @@ class ClientApp:
         """
         if self._session is None:
             return
+        user = self._session.identity.user_id
         self._session.peers.stop_listening()
         self._session = None
+        log.info("session.ended", user=user)
 
     def profile(self) -> Profile:
         """The logged-in user: id, alias, fingerprint and contact link."""
@@ -391,9 +400,11 @@ class ClientApp:
           MISSING entry ("waiting for this message"). Contact and receipt
           messages share the seq space, so they are used for this and then
           hidden.
-        * The two sides are interleaved by send time. That is the sender's
-          wall clock, so the interleaving is approximate until the history is
-          ordered by a logical clock (Lamport).
+        * The two sides are interleaved by Lamport timestamp, so a reply is
+          always after what it answers, even if the wall clocks disagree.
+          Ties (two messages written at the same time, without seeing each
+          other) go by sender id. Both participants therefore see the same
+          order.
 
         ``limit`` bounds how many messages of EACH side are read.
 
@@ -403,7 +414,8 @@ class ClientApp:
         session = self._require_session()
         if not is_int(limit) or limit < 1:
             raise ValueError("limit must be a positive integer")
-        conversation = ConversationId.between(session.identity.user_id, contact)
+        me = session.identity.user_id
+        conversation = ConversationId.between(me, contact)
         received = _received_entries(
             self._store.list_received(conversation, limit), contact, limit
         )
@@ -412,6 +424,7 @@ class ClientApp:
                 EntryKind.SENT,
                 m.seq,
                 m.sent_at_ms,
+                m.lamport,
                 m.body,
                 status=m.status,
                 message_id=m.message_id,
@@ -419,7 +432,12 @@ class ClientApp:
             for m in self._store.list_outgoing(conversation_id=conversation)[-limit:]
             if m.kind is MessageKind.TEXT
         ]
-        return list(heapq.merge(received, sent, key=lambda e: e.sent_at_ms))
+        # Sorted rather than merged: nothing assumes a peer's timestamps grow.
+        ordered = sorted(
+            [(e, contact) for e in received] + [(e, me) for e in sent],
+            key=lambda pair: (pair[0].lamport, pair[1].value, pair[0].seq),
+        )
+        return [entry for entry, _ in ordered]
 
     # network
 
@@ -487,6 +505,7 @@ class ClientApp:
         self._receiver.resume(identity)
         self._refresh_membership_if_due()
         directory.renew_if_due()
+        log.info("session.started", user=identity.user_id)
         return self._profile(identity)
 
     def _on_direct(self, envelope: Envelope) -> None:
@@ -586,7 +605,11 @@ def _received_entries(
     expected = 1 if len(messages) < limit else ordered[0].seq
     for message in ordered:
         for missing in range(expected, message.seq):
-            entries.append(HistoryEntry(EntryKind.MISSING, missing, message.sent_at_ms))
+            entries.append(
+                HistoryEntry(
+                    EntryKind.MISSING, missing, message.sent_at_ms, message.lamport
+                )
+            )
         expected = message.seq + 1
         if message.kind is MessageKind.TEXT:
             entries.append(
@@ -594,8 +617,29 @@ def _received_entries(
                     EntryKind.RECEIVED,
                     message.seq,
                     message.sent_at_ms,
+                    message.lamport,
                     message.body,
                     message_id=message.message_id,
                 )
             )
     return entries
+
+
+def _log_tick(report: TickReport) -> None:
+    """A summary of one tick, only when it did something."""
+    collected = 0 if report.collected is None else len(report.collected.results)
+    delivery = report.delivery
+    delivered = delivery.count(DeliveryOutcome.DELIVERED_DIRECT) + delivery.count(
+        DeliveryOutcome.ACCEPTED_BY_MAILBOX
+    )
+    retried = delivery.count(DeliveryOutcome.RETRY_SCHEDULED)
+    stored = len(report.stored)
+    if collected or stored or report.gaps or delivered or retried:
+        log.debug(
+            "client.tick",
+            collected=collected,
+            stored=stored,
+            gaps=len(report.gaps),
+            delivered=delivered,
+            retried=retried,
+        )

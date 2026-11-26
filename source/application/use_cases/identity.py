@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.errors import (
@@ -39,6 +40,8 @@ __all__ = [
     "WrongPasswordError",
     "check_password_policy",
 ]
+
+log = get_logger(__name__)
 
 MIN_PASSWORD_LENGTH = 8
 # Upper bound only to refuse absurd input (e.g. a pasted file); Argon2id itself
@@ -160,9 +163,18 @@ class IdentityService:
             WeakPasswordError: ``password`` does not satisfy the policy.
             AlreadyRegisteredError: this device already holds an identity.
         """
-        valid_alias = Alias(alias)
-        check_password_policy(password)
+        try:
+            valid_alias = Alias(alias)
+        except ValueError:
+            log.info("account.refused", reason="invalid_alias")
+            raise
+        try:
+            check_password_policy(password)
+        except WeakPasswordError:
+            log.info("account.refused", reason="weak_password")
+            raise
         if self.is_registered():
+            log.info("account.refused", reason="already_registered")
             raise AlreadyRegisteredError("this device already holds an identity")
 
         key_pair = self._crypto.generate_key_pair()
@@ -179,9 +191,11 @@ class IdentityService:
             self._store.save_identity(identity)
         except AlreadyExistsError as exc:
             # Another process registered between our check and our write.
+            log.info("account.refused", reason="already_registered")
             raise AlreadyRegisteredError(
                 "this device already holds an identity"
             ) from exc
+        log.info("account.created", user=identity.user_id)
         return UnlockedIdentity(identity=identity, private_key=key_pair.private_key)
 
     def unlock(self, password: str) -> UnlockedIdentity:
@@ -196,17 +210,23 @@ class IdentityService:
         """
         identity = self._store.load_identity()
         if identity is None:
+            log.warning("login.failed", reason="not_registered")
             raise NotRegisteredError("there is no identity on this device")
-        if not isinstance(password, str):
-            raise WrongPasswordError("wrong password")
-
-        private_key = self._crypto.unlock_private_key(
-            identity.protected_private_key, password
-        )
+        try:
+            if not isinstance(password, str):
+                raise WrongPasswordError("wrong password")
+            private_key = self._crypto.unlock_private_key(
+                identity.protected_private_key, password
+            )
+        except WrongPasswordError:
+            log.warning("login.failed", user=identity.user_id, reason="wrong_password")
+            raise
         if not self._key_pair_matches(private_key, identity.public_key):
+            log.error("login.failed", user=identity.user_id, reason="key_mismatch")
             raise CorruptedStoreError(
                 "the stored private key does not match the stored public key"
             )
+        log.info("login.succeeded", user=identity.user_id)
         return UnlockedIdentity(identity=identity, private_key=private_key)
 
     def _key_pair_matches(self, private_key: bytes, public_key: bytes) -> bool:

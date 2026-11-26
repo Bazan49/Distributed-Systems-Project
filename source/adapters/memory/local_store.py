@@ -232,6 +232,20 @@ class MemoryLocalStore:
         due.sort(key=lambda m: (m.sent_at_ms, m.conversation_id, m.seq))
         return due[:limit]
 
+    def max_lamport(self, conversation_id: ConversationId) -> int:
+        """Highest Lamport timestamp sent or stored as received here, or ``0``."""
+        sent = (
+            m.lamport
+            for m in self._outgoing.values()
+            if m.conversation_id == conversation_id
+        )
+        received = (
+            m.lamport
+            for m in self._received.values()
+            if m.conversation_id == conversation_id
+        )
+        return max([*sent, *received], default=0)
+
     def last_outgoing_seq(self, conversation_id: ConversationId) -> int:
         """Highest ``seq`` ever used by the local user in this conversation, or ``0``."""
         return max(

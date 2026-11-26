@@ -600,6 +600,7 @@ def stranger_envelope(
         1,
         BASE_TIME_MS,
         link.to_text() if body is None else body,
+        1,
     )
     return Envelope.build(
         message_id=MessageId.new(),

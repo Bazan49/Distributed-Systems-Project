@@ -25,6 +25,7 @@ Order of the protections (encrypt-then-sign):
 
 from __future__ import annotations
 
+from source.application.observability import get_logger
 from source.application.ports.clock import ClockPort
 from source.application.ports.crypto import CryptoPort
 from source.application.ports.local_store import LocalStorePort
@@ -42,6 +43,7 @@ __all__ = [
     "UnknownContactError",
 ]
 
+log = get_logger(__name__)
 
 # errors
 
@@ -120,7 +122,8 @@ class SendMessageService:
 
         Raises:
             ValueError: the contact is the local user, ``body`` is invalid
-                for ``kind``, or the contact's public key is malformed.
+                for ``kind``, the contact's public key is malformed, or the
+                conversation's Lamport timestamp reached ``MAX_LAMPORT``.
             AlreadyExistsError: the store refused the message because its
                 ``seq`` was taken meanwhile (concurrent sends).
         """
@@ -135,10 +138,14 @@ class SendMessageService:
 
         conversation_id = ConversationId.between(sender, receiver)
         seq = self._store.last_outgoing_seq(conversation_id) + 1
+        # Lamport: after everything sent or seen here, so a reply is always
+        # ordered after what it answers, whatever the wall clocks say.
+        lamport = self._store.max_lamport(conversation_id) + 1
         sent_at_ms = self._clock.now_ms()
-        # Validates kind and body (non-empty text, size limit) before any
+        # Validates kind, body (non-empty text, size limit) and the timestamp
+        # (beyond MAX_LAMPORT the conversation cannot go on) before any
         # cryptography runs.
-        content = MessageContent(kind, conversation_id, seq, sent_at_ms, body)
+        content = MessageContent(kind, conversation_id, seq, sent_at_ms, body, lamport)
 
         ciphertext = self._crypto.encrypt_for(contact.public_key, content.to_bytes())
         envelope = Envelope.build(
@@ -155,9 +162,19 @@ class SendMessageService:
             kind=kind,
             body=body,
             sent_at_ms=sent_at_ms,
+            lamport=lamport,
             status=OutgoingStatus.QUEUED,
             attempts=0,
             next_attempt_at_ms=None,  # due at once: the delivery policy picks it up
         )
         self._store.enqueue_outgoing(message)
+        log.info(
+            "message.queued",
+            msg=message.message_id,
+            peer=receiver,
+            conv=conversation_id,
+            seq=seq,
+            lamport=lamport,
+            kind=kind,
+        )
         return message

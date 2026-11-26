@@ -107,7 +107,9 @@ def make_received(
     message_id: MessageId | None = None,
     sent_at_ms: int = BASE_TIME_MS,
     received_at_ms: int = BASE_TIME_MS + 10,
+    lamport: int | None = None,
 ) -> ReceivedMessage:
+    """A received message; its Lamport timestamp defaults to its ``seq``."""
     return ReceivedMessage(
         message_id=message_id or next_message_id(),
         conversation_id=conversation_of(sender, me),
@@ -117,6 +119,7 @@ def make_received(
         body=default_body(kind) if body is None else body,
         sent_at_ms=sent_at_ms,
         received_at_ms=received_at_ms,
+        lamport=seq if lamport is None else lamport,
     )
 
 
@@ -132,11 +135,14 @@ def make_outgoing(
     status: OutgoingStatus = OutgoingStatus.QUEUED,
     attempts: int = 0,
     next_attempt_at_ms: int | None = None,
+    lamport: int | None = None,
 ) -> OutgoingMessage:
+    """An outgoing message; its Lamport timestamp defaults to its ``seq``."""
     crypto = FakeCrypto()
     conversation_id = conversation_of(sender, receiver)
     body = default_body(kind) if body is None else body
-    content = MessageContent(kind, conversation_id, seq, sent_at_ms, body)
+    lamport = seq if lamport is None else lamport
+    content = MessageContent(kind, conversation_id, seq, sent_at_ms, body, lamport)
     envelope = Envelope.build(
         message_id=message_id or next_message_id(),
         sender=sender.user_id,
@@ -151,6 +157,7 @@ def make_outgoing(
         kind=kind,
         body=body,
         sent_at_ms=sent_at_ms,
+        lamport=lamport,
         status=status,
         attempts=attempts,
         next_attempt_at_ms=next_attempt_at_ms,
